@@ -1,0 +1,130 @@
+*mdpv.txt*  GitHub-style markdown preview in the browser
+
+Author:  hitori-chan
+License: MIT (see LICENSE)
+
+==============================================================================
+CONTENTS                                                       *mdpv-contents*
+
+  1. Introduction ................................................ |mdpv-intro|
+  2. Requirements ......................................... |mdpv-requirements|
+  3. Usage ....................................................... |:Preview|
+  4. Configuration .............................................. |mdpv-config|
+  5. Lua API ....................................................... |mdpv-api|
+  6. Scroll sync .................................................. |mdpv-sync|
+  7. The preview page ............................................. |mdpv-page|
+  8. Health ..................................................... |mdpv-health|
+
+==============================================================================
+1. INTRODUCTION                                       *mdpv* *mdpv-intro*
+
+mdpv.nvim renders the current buffer in a browser tab, live, styled with
+GitHub's actual CSS and GitHub's exact markup — alerts, task lists,
+footnotes, heading anchors, KaTeX math, Mermaid diagrams, emoji shortcodes,
+frontmatter tables. It runs a pure-Lua HTTP + SSE server on |vim.uv|: no
+Node, no Deno, no Python, no build step.
+
+Any number of buffers can be previewed at once; each gets an unguessable URL
+on one shared, localhost-only server.
+
+==============================================================================
+2. REQUIREMENTS                                          *mdpv-requirements*
+
+- Neovim 0.12+.
+- A browser, launched via |vim.ui.open()|.
+
+Frontend libraries are vendored under `assets/vendor/` — there is nothing to
+install or build.
+
+==============================================================================
+3. USAGE                                                          *:Preview*
+
+  :Preview            open (or re-open) a preview for the current buffer
+  :Preview!           force-preview a buffer whose filetype is not eligible
+  :Preview close      close the current buffer's preview
+  :Preview toggle     open/close the current buffer's preview
+  :Preview list       list active previews and their URLs
+  :Preview stop       close all previews and stop the server
+
+Note: user commands must start with an uppercase letter (see
+|user-cmd-abbrev|), so a literal `:preview` is not possible.
+
+==============================================================================
+4. CONFIGURATION                                              *mdpv-config*
+
+Calling setup() is optional. Defaults: >lua
+
+  require('mdpv').setup({
+    host = '127.0.0.1',    -- interface to bind; keep loopback
+    port = 0,              -- 0 = free ephemeral port (no conflicts)
+    theme = 'auto',        -- 'auto' | 'light' | 'dark'
+    debounce = 150,        -- ms of quiet before pushing an edit
+    filetypes = { 'markdown' }, -- eligible without :Preview!
+    auto_close = true,     -- close preview when its buffer unloads
+    auto_stop = true,      -- stop server with the last preview
+    open_browser = true,   -- false: only print the URL
+    math = true,           -- $…$ / $$…$$ / ```math via KaTeX
+    mermaid = true,        -- ```mermaid diagrams
+    emoji = true,          -- :shortcode: expansion
+    scroll_sync = true,    -- see |mdpv-sync|; true | false | 'both'
+  })
+<
+==============================================================================
+5. LUA API                                                       *mdpv-api*
+
+  require('mdpv').open({bufnr}, {opts})                          *mdpv.open()*
+      Open a preview. {bufnr} defaults to the current buffer; {opts.force}
+      skips the filetype check. Returns the preview URL or nil.
+
+  require('mdpv').close({bufnr})                                *mdpv.close()*
+      Close the preview for {bufnr} (default: current buffer).
+
+  require('mdpv').toggle({bufnr})                              *mdpv.toggle()*
+      Open a preview if none is live for {bufnr}, otherwise close it.
+
+  require('mdpv').stop()                                         *mdpv.stop()*
+      Close all previews and stop the server.
+
+  require('mdpv').url({bufnr})                                    *mdpv.url()*
+      The preview URL for a buffer, if one is live.
+
+  require('mdpv').list()                                         *mdpv.list()*
+      Returns { { bufnr, title, url }, ... } for all active previews.
+
+==============================================================================
+6. SCROLL SYNC                                                  *mdpv-sync*
+
+With `scroll_sync = true` (default) the page follows your cursor line,
+interpolating between blocks for smooth tracking. "Follow cursor" in the
+page's floating menu (bottom right) toggles this per browser (persisted in
+localStorage).
+
+With `scroll_sync = 'both'`, scrolling the page also moves the Neovim cursor
+to the line under the upper third of the viewport. Echo suppression on both
+ends prevents feedback loops. Off entirely with `scroll_sync = false`.
+
+==============================================================================
+7. THE PREVIEW PAGE                                             *mdpv-page*
+
+- Content renders in the browser (markdown-it + GitHub markup passes), so
+  Neovim never parses markdown; edits are debounced and streamed over SSE.
+- A floating button (bottom right by default; drag it to any corner) shows
+  the connection state and opens a menu: follow cursor, theme
+  (auto/light/dark), full width, go to top. Choices and the button's corner
+  persist per browser in localStorage.
+- Relative images and links resolve against the file's directory (and its
+  subtree; links pointing above it are not served). A relative link to another
+  `.md` file renders as a page too; append `?raw` for the raw file.
+- Raw HTML is sanitized with DOMPurify; pages carry a strict CSP; the server
+  binds localhost only and every route is token-gated.
+- KaTeX and Mermaid are vendored but fetched only when a document uses them.
+- Updates are DOM-diffed (morphdom): images don't reload, open <details>
+  stay open, and unchanged math/diagrams are not re-typeset.
+
+==============================================================================
+8. HEALTH                                                     *mdpv-health*
+
+Run `:checkhealth mdpv` to verify the Neovim version, vendored assets, and
+server state.
+
+vim:tw=78:ts=8:noet:ft=help:norl:
