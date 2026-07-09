@@ -17,6 +17,10 @@ styled with GitHub's actual CSS.
   [github-markdown-css](https://github.com/sindresorhus/github-markdown-css)
   plus GitHub's exact markup: alerts, task lists, footnotes, heading anchors,
   `highlight.js` code, sanitized raw HTML.
+- **Obsidian callouts** — the whole
+  [callout vocabulary](https://obsidian.md/help/callouts) on top of GitHub's
+  five alerts: 13 types with aliases, custom titles, foldable
+  `> [!faq]- …` / `> [!tip]+ …`, and nesting.
 - **Math, Mermaid, emoji, frontmatter tables** — KaTeX (`$…$`, `$$…$$`,
   ` ```math `) and Mermaid (` ```mermaid `) are vendored and load only when a
   document uses them.

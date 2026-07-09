@@ -73,6 +73,34 @@ check(
 check('warning alert variant', content:find('class="markdown-alert markdown-alert-warning"', 1, true) ~= nil)
 check('plain blockquote untouched', content:find('<blockquote[^>]*>%s*<p[^>]*>Regular blockquote') ~= nil)
 
+-- Obsidian callouts (superset of GitHub alerts: more types, custom titles,
+-- folding, nesting)
+check('obsidian callout type', content:find('class="markdown-alert markdown-alert-success"', 1, true) ~= nil)
+check(
+  'custom title keeps inline markup',
+  content:find('octicon%-check%-circle.-<span>All <strong>checks</strong> passed</span>') ~= nil
+)
+check('default title from type', content:find('octicon%-zap.-</svg>Danger</p>') ~= nil)
+check(
+  'alias resolves (faq -> question)',
+  content:find('<details class="markdown%-alert markdown%-alert%-question"') ~= nil
+)
+check(
+  '[!type]- folds closed',
+  content:match('<details class="markdown%-alert markdown%-alert%-question"[^>]*') ~= nil
+    and content:match('<details class="markdown%-alert markdown%-alert%-question"[^>]*'):find('open') == nil
+)
+check('[!type]+ folds open', content:find('<details class="markdown%-alert markdown%-alert%-tip"[^>]*open') ~= nil)
+check(
+  'summary title with fold chevron',
+  content:find('<summary class="markdown%-alert%-title">.-octicon%-chevron%-down.-</summary>') ~= nil
+)
+check(
+  'callouts nest',
+  content:find('Can callouts nest%?</span>.-<div class="markdown%-alert markdown%-alert%-todo"') ~= nil
+)
+check('unknown type stays a blockquote', content:find('<blockquote[^>]*>%s*<p[^>]*>%[!unknown%]') ~= nil)
+
 -- Task lists (GitHub classes come from markdown-it-task-lists)
 check('task list ul class', content:find('contains-task-list', 1, true) ~= nil)
 check('task list item class', content:find('task-list-item', 1, true) ~= nil)

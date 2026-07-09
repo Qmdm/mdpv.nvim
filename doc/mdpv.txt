@@ -19,10 +19,10 @@ CONTENTS                                                       *mdpv-contents*
 1. INTRODUCTION                                       *mdpv* *mdpv-intro*
 
 mdpv.nvim renders the current buffer in a browser tab, live, styled with
-GitHub's actual CSS and GitHub's exact markup — alerts, task lists,
-footnotes, heading anchors, KaTeX math, Mermaid diagrams, emoji shortcodes,
-frontmatter tables. It runs a pure-Lua HTTP + SSE server on |vim.uv|: no
-Node, no Deno, no Python, no build step.
+GitHub's actual CSS and GitHub's exact markup — alerts, Obsidian callouts,
+task lists, footnotes, heading anchors, KaTeX math, Mermaid diagrams, emoji
+shortcodes, frontmatter tables. It runs a pure-Lua HTTP + SSE server on
+|vim.uv|: no Node, no Deno, no Python, no build step.
 
 Any number of buffers can be previewed at once; each gets an unguessable URL
 on one shared, localhost-only server.
@@ -108,6 +108,10 @@ ends prevents feedback loops. Off entirely with `scroll_sync = false`.
 
 - Content renders in the browser (markdown-it + GitHub markup passes), so
   Neovim never parses markdown; edits are debounced and streamed over SSE.
+- GitHub's five alerts (`> [!NOTE]`…) render exactly as GitHub does, and the
+  full Obsidian callout set rides on top (obsidian.md/help/callouts): 13
+  types plus their aliases, custom titles after the marker, folding
+  (`[!faq]-` starts collapsed, `[!tip]+` starts expanded), and nesting.
 - A floating button (bottom right by default; drag it to any corner) shows
   the connection state and opens a menu: follow cursor, theme
   (auto/light/dark), full width, go to top. Choices and the button's corner

@@ -54,6 +54,28 @@ plain fenced block
 
 > Regular blockquote, not an alert.
 
+### Callouts
+
+> [!success] All **checks** passed
+> Obsidian callout with a custom title.
+
+> [!faq]- Are callouts foldable?
+> Yes, and this one starts collapsed.
+
+> [!tip]+ Pinned open
+> Foldable callout, expanded by default.
+
+> [!danger]
+> Obsidian type with a default title.
+
+> [!question] Can callouts nest?
+>
+> > [!todo] Inner callout
+> > Nested one level down.
+
+> [!unknown]
+> Not a callout type, stays a blockquote.
+
 ### Math
 
 Euler's identity $e^{i\pi} + 1 = 0$ inline, five dollars ($5) untouched.

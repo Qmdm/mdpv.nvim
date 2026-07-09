@@ -53,7 +53,8 @@ lua/mdpv/preview.lua   per-buffer lifecycle: token, buf_attach, debounce, teardo
 lua/mdpv/server.lua    vim.uv TCP server: HTTP parsing, routes, SSE, static files
 assets/index.html      page shell (template: {{TITLE}} {{BOOT}} {{CSS_LINKS}} …)
 assets/app.js          browser renderer (markdown-it → DOMPurify → GitHub markup)
-assets/mdpv.css        page chrome (floating menu, container) in Primer tokens
+assets/mdpv.css        page chrome (floating menu, container, non-GitHub
+                       callout kinds) in Primer tokens
 assets/vendor/         pinned deps (scripts/vendor.sh re-downloads them)
 tests/                 e2e.lua · fidelity.lua · sync.lua (+ cdp.js driver)
 ```
@@ -110,11 +111,20 @@ generated from GitHub's real Primer styles, so fidelity reduces to emitting
 the markup GitHub emits (verified live against `POST api.github.com/markdown`
 during research):
 
-- *Alerts*: markdown-it has no alert plugin with GitHub markup, so a DOM pass
-  converts `blockquote` starting with `[!NOTE]`… into
+- *Alerts & callouts*: markdown-it has no alert plugin with GitHub markup, so
+  a DOM pass converts `blockquote` starting with `[!NOTE]`… into
   `div.markdown-alert.markdown-alert-note` + `p.markdown-alert-title` with the
   correct Primer octicon (`octicon-info mr-2`, `light-bulb`, `report`,
-  `alert`, `stop`) inlined from `@primer/octicons`.
+  `alert`, `stop`) inlined from `@primer/octicons`. The same pass implements
+  the full [Obsidian callout set](https://obsidian.md/help/callouts) as a
+  superset: the remaining types and aliases map onto new `markdown-alert-*`
+  kinds (octicons + Primer colors standing in for Obsidian's lucide icons,
+  styled in `mdpv.css`), text after the marker becomes the title (wrapped in
+  a `<span>` so the flex title keeps inter-element spaces), `[!type]-` /
+  `[!type]+` fold into `<details>`/`<summary>`, and nesting falls out of the
+  per-blockquote walk. Where the vocabularies collide (`important`,
+  `caution`), GitHub's alert kinds win over Obsidian's aliases; unknown types
+  stay plain blockquotes, as on GitHub.
 - *Heading anchors*: `a.anchor` + `svg.octicon-link` prepended into `h1–h6`,
   hover-revealed by the stock CSS; ids from a github-slugger-compatible
   slugger (lowercase, strip punctuation, spaces→`-`, `-1`/`-2` dedup).
@@ -251,11 +261,13 @@ here to bound traversal against.
   static `.md` pages + `?raw`, multi-preview isolation, re-open reuse,
   filetype guard, auto-close on wipeout, auto-stop, restart, `:Preview`
   command surface.
-- `tests/fidelity.lua` (41 checks): headless Chromium `--dump-dom` of a live
-  preview asserting GitHub markup (alert divs + octicons, task-list classes,
-  slug dedup, footnote shape, hljs spans, KaTeX inline/display typesetting,
-  Mermaid SVG, emoji expansion, frontmatter table incl. nested maps,
-  source-line mapping, morphdom keys, sanitization, `/f/` URL rewriting).
+- `tests/fidelity.lua` (50 checks): headless Chromium `--dump-dom` of a live
+  preview asserting GitHub markup (alert divs + octicons, Obsidian callouts —
+  extra types, aliases, custom titles, `<details>` folding, nesting —
+  task-list classes, slug dedup, footnote shape, hljs spans, KaTeX
+  inline/display typesetting, Mermaid SVG, emoji expansion, frontmatter table
+  incl. nested maps, source-line mapping, morphdom keys, sanitization, `/f/`
+  URL rewriting).
 - `tests/sync.lua` (5 checks): drives headless Chromium over the DevTools
   protocol (tests/cdp.js, dependency-free — Node's built-in WebSocket) to
   prove scroll sync in both directions against a real page: a cursor move

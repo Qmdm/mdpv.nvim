@@ -2,6 +2,10 @@
  * Color tokens track github-markdown-css v5 (Primer). Theme selection:
  * html[data-theme="auto"] follows prefers-color-scheme; "light"/"dark" force. */
 
+/* The callout colors can't lean on github-markdown-css custom properties:
+ * the forced light/dark builds inline their colors and define (almost) no
+ * variables, so every kind styled here gets its own --mdpv-* pair
+ * (border-emphasis and title-fg differ per theme in Primer). */
 :root {
   --mdpv-bg: #ffffff;
   --mdpv-bg-subtle: #f6f8fa;
@@ -9,7 +13,16 @@
   --mdpv-fg: #1f2328;
   --mdpv-fg-muted: #59636e;
   --mdpv-success: #1a7f37;
+  --mdpv-success-border: #1a7f37;
   --mdpv-attention: #9a6700;
+  --mdpv-accent-fg: #0969da;
+  --mdpv-accent-border: #0969da;
+  --mdpv-danger-fg: #d1242f;
+  --mdpv-danger-border: #cf222e;
+  --mdpv-done-fg: #8250df;
+  --mdpv-done-border: #8250df;
+  --mdpv-cyan: #1b7c83;
+  --mdpv-severe: #bc4c00;
 }
 
 html[data-theme='dark'] {
@@ -19,7 +32,16 @@ html[data-theme='dark'] {
   --mdpv-fg: #f0f6fc;
   --mdpv-fg-muted: #9198a1;
   --mdpv-success: #3fb950;
+  --mdpv-success-border: #238636;
   --mdpv-attention: #d29922;
+  --mdpv-accent-fg: #4493f8;
+  --mdpv-accent-border: #1f6feb;
+  --mdpv-danger-fg: #f85149;
+  --mdpv-danger-border: #da3633;
+  --mdpv-done-fg: #ab7df8;
+  --mdpv-done-border: #8957e5;
+  --mdpv-cyan: #39c5cf;
+  --mdpv-severe: #db6d28;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -30,7 +52,16 @@ html[data-theme='dark'] {
     --mdpv-fg: #f0f6fc;
     --mdpv-fg-muted: #9198a1;
     --mdpv-success: #3fb950;
+    --mdpv-success-border: #238636;
     --mdpv-attention: #d29922;
+    --mdpv-accent-fg: #4493f8;
+    --mdpv-accent-border: #1f6feb;
+    --mdpv-danger-fg: #f85149;
+    --mdpv-danger-border: #da3633;
+    --mdpv-done-fg: #ab7df8;
+    --mdpv-done-border: #8957e5;
+    --mdpv-cyan: #39c5cf;
+    --mdpv-severe: #db6d28;
   }
 }
 
@@ -290,6 +321,97 @@ body.mdpv-wide main {
 .markdown-body pre code.hljs {
   padding: 0;
   background: transparent;
+}
+
+/* Obsidian callout types beyond GitHub's five alerts, drawn in the same
+ * visual language (github-markdown-css only ships note/tip/important/
+ * warning/caution). All colors come from the --mdpv-* variables at the top —
+ * see the note there on why the vendored variables can't be used. */
+.markdown-body .markdown-alert.markdown-alert-info,
+.markdown-body .markdown-alert.markdown-alert-todo {
+  border-left-color: var(--mdpv-accent-border);
+}
+
+.markdown-body .markdown-alert.markdown-alert-info .markdown-alert-title,
+.markdown-body .markdown-alert.markdown-alert-todo .markdown-alert-title {
+  color: var(--mdpv-accent-fg);
+}
+
+.markdown-body .markdown-alert.markdown-alert-abstract {
+  border-left-color: var(--mdpv-cyan);
+}
+
+.markdown-body .markdown-alert.markdown-alert-abstract .markdown-alert-title {
+  color: var(--mdpv-cyan);
+}
+
+.markdown-body .markdown-alert.markdown-alert-success {
+  border-left-color: var(--mdpv-success-border);
+}
+
+.markdown-body .markdown-alert.markdown-alert-success .markdown-alert-title {
+  color: var(--mdpv-success);
+}
+
+.markdown-body .markdown-alert.markdown-alert-question {
+  border-left-color: var(--mdpv-severe);
+}
+
+.markdown-body .markdown-alert.markdown-alert-question .markdown-alert-title {
+  color: var(--mdpv-severe);
+}
+
+.markdown-body .markdown-alert.markdown-alert-failure,
+.markdown-body .markdown-alert.markdown-alert-danger,
+.markdown-body .markdown-alert.markdown-alert-bug {
+  border-left-color: var(--mdpv-danger-border);
+}
+
+.markdown-body .markdown-alert.markdown-alert-failure .markdown-alert-title,
+.markdown-body .markdown-alert.markdown-alert-danger .markdown-alert-title,
+.markdown-body .markdown-alert.markdown-alert-bug .markdown-alert-title {
+  color: var(--mdpv-danger-fg);
+}
+
+.markdown-body .markdown-alert.markdown-alert-example {
+  border-left-color: var(--mdpv-done-border);
+}
+
+.markdown-body .markdown-alert.markdown-alert-example .markdown-alert-title {
+  color: var(--mdpv-done-fg);
+}
+
+.markdown-body .markdown-alert.markdown-alert-quote {
+  border-left-color: var(--mdpv-fg-muted);
+}
+
+.markdown-body .markdown-alert.markdown-alert-quote .markdown-alert-title {
+  color: var(--mdpv-fg-muted);
+}
+
+/* Foldable callouts ([!type]- collapsed, [!type]+ expanded) are <details>
+ * with the title as <summary>; a trailing chevron flips with the state. */
+.markdown-body summary.markdown-alert-title {
+  cursor: pointer;
+  list-style: none;
+}
+
+.markdown-body summary.markdown-alert-title::-webkit-details-marker {
+  display: none;
+}
+
+.markdown-body details.markdown-alert[open] > summary.markdown-alert-title {
+  margin-bottom: 16px; /* the margin a <p> title would have */
+}
+
+.markdown-body .markdown-alert .mdpv-fold {
+  margin-left: 8px;
+  transition: transform 0.15s ease;
+  transform: rotate(-90deg);
+}
+
+.markdown-body details.markdown-alert[open] .mdpv-fold {
+  transform: none;
 }
 
 /* Display math ($$…$$ / ```math): centered like GitHub, scrollable if wide. */
