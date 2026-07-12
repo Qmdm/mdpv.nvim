@@ -24,6 +24,8 @@
   const $status = document.getElementById('status');
   const $statusText = document.getElementById('status-text');
   const $follow = document.getElementById('follow-toggle');
+  const $syncBack = document.getElementById('syncback-toggle');
+  const $toc = document.getElementById('mdpv-toc');
 
   // Primer octicons: GitHub's own glyphs for its five alerts, plus stand-ins
   // for the icons of Obsidian's remaining callout types.
@@ -857,9 +859,10 @@
   }
 
   // --- Floating menu ---------------------------------------------------------
-  // A Next.js-devtools-style round button opens a small panel: connection
-  // status, follow toggle (live previews only), theme, full width, go to top.
-  // Drag it to park it in any corner; the corner persists per browser.
+  // A Next.js-devtools-style round button opens a small grouped panel: sync
+  // toggles (live previews only), outline, full width, theme, go to top.
+  // Drag it to park it in any corner; the corner persists per browser. The
+  // outline panel (#mdpv-toc) floats and corner-parks the same way.
 
   function toggleMenu(open) {
     const show = open ?? $fabMenu.hidden;
@@ -874,90 +877,132 @@
   });
 
   const FAB_MARGIN = 20; // distance from the viewport edges, all corners
-  const stored = localStorage.getItem('mdpv-fab-corner');
-  if (/^[tb][lr]$/.test(stored)) $fab.dataset.corner = stored;
+  // When the outline panel and the button rest in the same corner, the panel
+  // yields: it anchors past the button (button + gap) instead of at the edge
+  // margin, so the two never overlap. CSS mirrors this via .mdpv-evade.
+  const TOC_EVADE = 72;
 
-  let drag = null; // {x, y, dx, dy, moved} while the pointer is down
-  let dragged = false; // the click that ends a drag must not open the menu
-  $fabToggle.addEventListener('pointerdown', (ev) => {
-    if (ev.button !== 0) return;
-    dragged = false; // pointercancel ends a drag without a click; don't go stale
-    const r = $fab.getBoundingClientRect();
-    drag = { x: ev.clientX, y: ev.clientY, dx: ev.clientX - r.left, dy: ev.clientY - r.top, moved: false };
-    $fabToggle.setPointerCapture(ev.pointerId);
+  function updateEvade() {
+    $toc.classList.toggle('mdpv-evade', $toc.dataset.corner === $fab.dataset.corner);
+  }
+
+  // Corner-parking drag, shared by the button and the outline panel: under
+  // 5px of pointer travel stays a click; past it the element follows the
+  // pointer, then snaps (and glides) to the nearest corner, which persists.
+  function cornerDrag(el, handle, storageKey, opts = {}) {
+    const stored = localStorage.getItem(storageKey);
+    if (/^[tb][lr]$/.test(stored)) el.dataset.corner = stored;
+    let drag = null; // {id, x, y, dx, dy, moved} while the pointer is down
+    let dragged = false; // the click that ends a drag must not act as one
+    handle.addEventListener('pointerdown', (ev) => {
+      if (ev.button !== 0) return;
+      dragged = false; // pointercancel ends a drag without a click; don't go stale
+      const r = el.getBoundingClientRect();
+      drag = { id: ev.pointerId, x: ev.clientX, y: ev.clientY, dx: ev.clientX - r.left, dy: ev.clientY - r.top, moved: false };
+    });
+    // Move/up listen on window, with no pointer capture: capture would
+    // retarget the tail click away from the element under the pointer (the
+    // outline's links), and handle-scoped moves lose fast drags that leave
+    // the handle between two events.
+    window.addEventListener('pointermove', (ev) => {
+      if (!drag || ev.pointerId !== drag.id) return;
+      if (!drag.moved) {
+        if (Math.hypot(ev.clientX - drag.x, ev.clientY - drag.y) < 5) return; // still a click
+        drag.moved = true;
+        el.classList.add('dragging');
+        if (opts.onDragStart) opts.onDragStart();
+      }
+      el.style.left = `${Math.max(0, Math.min(ev.clientX - drag.dx, window.innerWidth - el.offsetWidth))}px`;
+      el.style.top = `${Math.max(0, Math.min(ev.clientY - drag.dy, window.innerHeight - el.offsetHeight))}px`;
+      el.style.right = 'auto';
+      el.style.bottom = 'auto';
+    });
+    const endDrag = (ev) => {
+      if (!drag || ev.pointerId !== drag.id) return;
+      dragged = drag.moved;
+      drag = null;
+      el.classList.remove('dragging');
+      if (!dragged) return;
+      // Snap to the nearest corner, glide there, then hand anchoring back to CSS.
+      const corner = (ev.clientY < window.innerHeight / 2 ? 't' : 'b')
+        + (ev.clientX < window.innerWidth / 2 ? 'l' : 'r');
+      localStorage.setItem(storageKey, corner);
+      const m = opts.margins ? opts.margins(corner) : { x: FAB_MARGIN, y: FAB_MARGIN };
+      el.classList.add('snapping');
+      el.style.left = `${corner[1] === 'l' ? m.x : window.innerWidth - el.offsetWidth - m.x}px`;
+      el.style.top = `${corner[0] === 't' ? m.y : window.innerHeight - el.offsetHeight - m.y}px`;
+      setTimeout(() => {
+        el.classList.remove('snapping');
+        el.style.cssText = '';
+        el.dataset.corner = corner;
+        if (opts.onSnap) opts.onSnap(corner);
+      }, 160);
+    };
+    window.addEventListener('pointerup', endDrag);
+    window.addEventListener('pointercancel', endDrag);
+    return {
+      wasDrag: () => {
+        const was = dragged;
+        dragged = false;
+        return was;
+      },
+    };
+  }
+
+  const fabDrag = cornerDrag($fab, $fabToggle, 'mdpv-fab-corner', {
+    onDragStart: () => toggleMenu(false),
+    onSnap: updateEvade,
   });
-  $fabToggle.addEventListener('pointermove', (ev) => {
-    if (!drag) return;
-    if (!drag.moved) {
-      if (Math.hypot(ev.clientX - drag.x, ev.clientY - drag.y) < 5) return; // still a click
-      drag.moved = true;
-      toggleMenu(false);
-      $fab.classList.add('dragging');
-    }
-    const w = $fab.offsetWidth;
-    const h = $fab.offsetHeight;
-    $fab.style.left = `${Math.max(0, Math.min(ev.clientX - drag.dx, window.innerWidth - w))}px`;
-    $fab.style.top = `${Math.max(0, Math.min(ev.clientY - drag.dy, window.innerHeight - h))}px`;
-    $fab.style.right = 'auto';
-    $fab.style.bottom = 'auto';
-  });
-  const endDrag = (ev) => {
-    if (!drag) return;
-    dragged = drag.moved;
-    drag = null;
-    $fab.classList.remove('dragging');
-    if (!dragged) return;
-    // Snap to the nearest corner, glide there, then hand anchoring back to CSS.
-    const corner = (ev.clientY < window.innerHeight / 2 ? 't' : 'b')
-      + (ev.clientX < window.innerWidth / 2 ? 'l' : 'r');
-    localStorage.setItem('mdpv-fab-corner', corner);
-    $fab.classList.add('snapping');
-    $fab.style.left = `${corner[1] === 'l' ? FAB_MARGIN : window.innerWidth - $fab.offsetWidth - FAB_MARGIN}px`;
-    $fab.style.top = `${corner[0] === 't' ? FAB_MARGIN : window.innerHeight - $fab.offsetHeight - FAB_MARGIN}px`;
-    setTimeout(() => {
-      $fab.classList.remove('snapping');
-      $fab.style.cssText = '';
-      $fab.dataset.corner = corner;
-    }, 160);
-  };
-  $fabToggle.addEventListener('pointerup', endDrag);
-  $fabToggle.addEventListener('pointercancel', endDrag);
   $fabToggle.addEventListener('click', () => {
-    if (dragged) {
-      dragged = false;
-      return;
-    }
+    if (fabDrag.wasDrag()) return;
     toggleMenu();
   });
+  // The whole outline is its own drag handle; a sub-5px press stays a link
+  // click (nothing is captured, so the click reaches the link untouched).
+  const tocDrag = cornerDrag($toc, $toc, 'mdpv-toc-corner', {
+    margins: (corner) => ({ x: FAB_MARGIN, y: corner === $fab.dataset.corner ? TOC_EVADE : FAB_MARGIN }),
+    onSnap: updateEvade,
+  });
+  $toc.addEventListener('dragstart', (ev) => ev.preventDefault()); // anchors native-drag by default
+  updateEvade();
 
-  // Theme: the server renders the configured theme; the toggle cycles
-  // auto -> light -> dark per browser (persisted in localStorage), swapping
+  // Theme: the server renders the configured theme; the segmented control
+  // picks auto/light/dark per browser (persisted in localStorage), swapping
   // in the same stylesheet pair the server would have injected.
   const THEME_CSS = {
     auto: ['github-markdown.css', 'hljs-github-auto.css'],
     light: ['github-markdown-light.css', 'github.min.css'],
     dark: ['github-markdown-dark.css', 'github-dark.min.css'],
   };
-  const THEMES = Object.keys(THEME_CSS);
+  const $themeSeg = document.getElementById('theme-seg');
+
+  function paintThemeSeg(theme) {
+    for (const b of $themeSeg.children) {
+      b.setAttribute('aria-pressed', String(b.dataset.themeOpt === theme));
+    }
+  }
 
   function applyTheme(theme) {
     document.documentElement.dataset.theme = theme;
     document.querySelector('meta[name="color-scheme"]').content = theme === 'auto' ? 'light dark' : theme;
     document.getElementById('mdpv-css-md').href = `/assets/vendor/${THEME_CSS[theme][0]}?v=${V}`;
     document.getElementById('mdpv-css-hljs').href = `/assets/vendor/${THEME_CSS[theme][1]}?v=${V}`;
-    document.getElementById('theme-value').textContent = theme;
+    paintThemeSeg(theme);
     rethemeMermaid();
   }
 
   const storedTheme = localStorage.getItem('mdpv-theme');
   if (THEME_CSS[storedTheme] && storedTheme !== document.documentElement.dataset.theme) {
     applyTheme(storedTheme);
+  } else {
+    paintThemeSeg(document.documentElement.dataset.theme);
   }
-  document.getElementById('theme-toggle').addEventListener('click', () => {
-    const cur = document.documentElement.dataset.theme;
-    const next = THEMES[(THEMES.indexOf(cur) + 1) % THEMES.length];
-    localStorage.setItem('mdpv-theme', next);
-    applyTheme(next);
+  $themeSeg.addEventListener('click', (ev) => {
+    const btn = ev.target.closest('button');
+    const theme = btn && btn.dataset.themeOpt;
+    if (!theme || !THEME_CSS[theme] || theme === document.documentElement.dataset.theme) return;
+    localStorage.setItem('mdpv-theme', theme);
+    applyTheme(theme);
   });
 
   // Full width: drop the GitHub-like 1012px cap on the content column.
@@ -986,14 +1031,31 @@
   });
 
   // --- Outline ---------------------------------------------------------------
-  // A collapsible document outline in the menu, rebuilt per render from the
-  // headings (which already carry slug ids), with a scroll-spy highlight on
-  // the one under the viewport anchor.
+  // A bare floating heading list (#mdpv-toc, corner-parked above — no panel
+  // box; a feathered frost veil keeps it legible over content), rebuilt per
+  // render from the headings (which already carry slug ids), with a
+  // scroll-spy highlight on the one under the viewport anchor. The menu's
+  // Outline switch owns its visibility.
 
   const $outlineBtn = document.getElementById('outline-toggle');
   const $outline = document.getElementById('outline-list');
   let outlineHeads = [];
   let outlineActive = null;
+  let outlineOn = localStorage.getItem('mdpv-outline') !== '0'; // on by default
+
+  // The switch reflects the user's wish; the panel shows only while the
+  // document also has headings to list.
+  function paintOutline() {
+    $outlineBtn.setAttribute('aria-pressed', String(outlineOn));
+    $toc.hidden = !(outlineOn && outlineHeads.length > 0);
+    if (!$toc.hidden) markOutlineActive();
+  }
+
+  function setOutlineOn(on) {
+    outlineOn = on;
+    localStorage.setItem('mdpv-outline', on ? '1' : '0');
+    paintOutline();
+  }
 
   function setOutlineActive(link) {
     if (link === outlineActive) return;
@@ -1006,7 +1068,7 @@
   }
 
   function markOutlineActive() {
-    if ($outline.hidden || outlineHeads.length === 0) return;
+    if ($toc.hidden || outlineHeads.length === 0) return;
     // A programmatic glide is in flight (outline click, go-to-top, cursor
     // follow): whoever started it set the right active item; a spy pass
     // mid-flight — or pinned at the page bottom — would fight it.
@@ -1019,20 +1081,22 @@
   function rebuildOutline() {
     outlineHeads = [...$content.querySelectorAll('h1[id],h2[id],h3[id],h4[id],h5[id],h6[id]')];
     $outlineBtn.hidden = outlineHeads.length === 0;
-    if (outlineHeads.length === 0) {
-      $outline.hidden = true;
-      $outlineBtn.setAttribute('aria-expanded', 'false');
-    }
     outlineActive = null;
     $outline.textContent = '';
     for (const h of outlineHeads) {
       const a = document.createElement('a');
       a.href = `#${h.id}`;
       a.className = `outline-${h.tagName.toLowerCase()}`;
-      a.textContent = h.textContent;
+      const bar = document.createElement('span');
+      bar.className = 'toc-bar'; // the collapsed-rail dash
+      const label = document.createElement('span');
+      label.className = 'toc-text';
+      label.textContent = h.textContent;
+      a.title = h.textContent; // full text when the label ellipsizes
+      a.append(bar, label);
       $outline.appendChild(a);
     }
-    markOutlineActive();
+    paintOutline();
   }
 
   // Follow-mode hook: pick the active item by source line — the spy is
@@ -1043,16 +1107,26 @@
     setOutlineActive($outline.children[Math.max(i, 0)]);
   }
 
-  $outlineBtn.addEventListener('click', () => {
-    const show = $outline.hidden;
-    $outline.hidden = !show;
-    $outlineBtn.setAttribute('aria-expanded', String(show));
-    if (show) markOutlineActive();
+  $outlineBtn.addEventListener('click', () => setOutlineOn(!outlineOn));
+
+  // Hover-intent expansion: the collapsed rail becomes the full list after
+  // a short dwell (so a pointer merely passing by doesn't pop the card) and
+  // collapses as soon as the pointer leaves. CSS also expands on
+  // :focus-within, so keyboard users never need the pointer.
+  let tocOpenTimer = 0;
+  $toc.addEventListener('pointerenter', () => {
+    clearTimeout(tocOpenTimer);
+    tocOpenTimer = setTimeout(() => $toc.classList.add('open'), 120);
+  });
+  $toc.addEventListener('pointerleave', () => {
+    clearTimeout(tocOpenTimer);
+    $toc.classList.remove('open');
   });
   $outline.addEventListener('click', (ev) => {
     const a = ev.target.closest('a');
     if (!a) return;
     ev.preventDefault();
+    if (tocDrag.wasDrag()) return; // the click that ends a drag isn't a jump
     const target = document.getElementById(decodeURIComponent(a.hash.slice(1)));
     if (!target) return;
     history.replaceState(null, '', a.hash);
@@ -1114,32 +1188,41 @@
   });
 
   // --- Scroll sync -----------------------------------------------------------
-  // Editor -> browser: the server streams the cursor line; block elements
-  // carry data-source-line, and interpolating between the surrounding two
-  // mapped elements keeps long paragraphs/code blocks tracking smoothly.
-  // Browser -> editor (scroll_sync = 'both'): user scrolls POST the line
-  // under the viewport anchor back, moving the cursor. Echo control: our own
-  // smooth scrolls are ignored for a beat (progUntil), and the editor skips
+  // Editor -> browser ("Follow cursor"): the server streams the cursor line;
+  // block elements carry data-source-line, and interpolating between the
+  // surrounding two mapped elements keeps long paragraphs/code blocks
+  // tracking smoothly. Browser -> editor ("Move cursor on scroll"): user
+  // scrolls POST the line under the viewport anchor back, moving the cursor.
+  // Both directions are per-browser switches in the menu; scroll_sync =
+  // 'both' only picks the second one's default. Echo control: our own smooth
+  // scrolls are ignored for a beat (progUntil), and the editor skips
   // re-broadcasting a cursor line it just applied.
 
   const SYNC = FEATURES.scrollSync; // false | true | 'both'
   let follow = localStorage.getItem('mdpv-follow') !== '0';
+  let syncBack = (localStorage.getItem('mdpv-sync-back') ?? (SYNC === 'both' ? '1' : '0')) === '1';
   let lastSentLine = 0;
 
-  function paintFollow() {
-    $follow.setAttribute('aria-pressed', String(follow)); // drives the menu switch
+  function paintSync() {
+    $follow.setAttribute('aria-pressed', String(follow)); // drives the menu switches
+    $syncBack.setAttribute('aria-pressed', String(syncBack));
   }
   if (SYNC) {
-    $follow.hidden = false;
-    paintFollow();
+    document.getElementById('sync-group').hidden = false;
+    paintSync();
     $follow.addEventListener('click', () => {
       follow = !follow;
       localStorage.setItem('mdpv-follow', follow ? '1' : '0');
-      paintFollow();
+      paintSync();
       if (!follow) {
         cursorLine = 0;
         paintCursorBlock();
       }
+    });
+    $syncBack.addEventListener('click', () => {
+      syncBack = !syncBack;
+      localStorage.setItem('mdpv-sync-back', syncBack ? '1' : '0');
+      paintSync();
     });
   }
 
@@ -1191,10 +1274,10 @@
     return Math.max(1, Math.round(prevLine + span * ((anchor - a) / (b - a))));
   }
 
-  if (SYNC === 'both') {
+  if (SYNC) {
     let sendTimer = 0;
     window.addEventListener('scroll', () => {
-      if (!follow || performance.now() < progUntil) return;
+      if (!syncBack || performance.now() < progUntil) return;
       clearTimeout(sendTimer);
       sendTimer = setTimeout(() => {
         if (performance.now() < progUntil) return;

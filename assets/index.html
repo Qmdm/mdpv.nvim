@@ -28,21 +28,37 @@
     <div id="status" title="Connected — updates live as you edit">
       <span class="dot"></span><span id="status-text">live</span>
     </div>
-    <button type="button" id="follow-toggle" hidden aria-pressed="true"
-      title="Scroll the preview to follow the cursor in Neovim">Follow cursor<span class="fab-switch"></span></button>
-    <button type="button" id="outline-toggle" hidden aria-expanded="false"
-      title="Document outline">Outline<span class="fab-caret"></span></button>
-    <div id="outline-list" hidden></div>
-    <button type="button" id="theme-toggle"
-      title="Cycle between auto, light, and dark">Theme<span class="fab-value" id="theme-value">{{THEME}}</span></button>
-    <button type="button" id="width-toggle" aria-pressed="false"
-      title="Let the page span the full window width">Full width<span class="fab-switch"></span></button>
+    <div class="fab-group" id="sync-group" hidden>
+      <div class="fab-label">Sync</div>
+      <button type="button" id="follow-toggle" aria-pressed="true"
+        title="Scroll the preview to follow the cursor in Neovim">Follow cursor<span class="fab-switch"></span></button>
+      <button type="button" id="syncback-toggle" aria-pressed="false"
+        title="Scrolling the preview moves the cursor in Neovim">Move cursor on scroll<span class="fab-switch"></span></button>
+    </div>
+    <div class="fab-group">
+      <div class="fab-label">View</div>
+      <button type="button" id="outline-toggle" hidden aria-pressed="false"
+        title="Show the document outline panel">Outline<span class="fab-switch"></span></button>
+      <button type="button" id="width-toggle" aria-pressed="false"
+        title="Let the page span the full window width">Full width<span class="fab-switch"></span></button>
+      <div class="fab-row">
+        <span>Theme</span>
+        <div id="theme-seg" role="group" aria-label="Theme">
+          <button type="button" data-theme-opt="auto">Auto</button>
+          <button type="button" data-theme-opt="light">Light</button>
+          <button type="button" data-theme-opt="dark">Dark</button>
+        </div>
+      </div>
+    </div>
     <button type="button" id="top-button" title="Scroll back to the top">Go to top</button>
   </div>
   <button type="button" id="fab-toggle" aria-haspopup="true" aria-expanded="false" title="mdpv">
     <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M14.85 3H1.15C.52 3 0 3.52 0 4.15v7.69C0 12.48.52 13 1.15 13h13.69c.64 0 1.15-.52 1.15-1.15v-7.7C16 3.52 15.48 3 14.85 3ZM9 11H7V8L5.5 9.92 4 8v3H2V5h2l1.5 2L7 5h2v6Zm2.99.5L9.5 8H11V5h2v3h1.5l-2.51 3.5Z"/></svg>
     <span class="dot"></span>
   </button>
+</div>
+<div id="mdpv-toc" hidden data-corner="tr" aria-label="Document outline">
+  <div id="outline-list"></div>
 </div>
 </body>
 </html>

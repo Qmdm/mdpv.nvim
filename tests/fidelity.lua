@@ -173,18 +173,39 @@ check('frontmatter list joined', content:find('alpha, beta', 1, true) ~= nil)
 check('frontmatter nested map flattened', content:find('status: passing, ci: local', 1, true) ~= nil)
 check('frontmatter not rendered as markdown', content:find('<p>title:', 1, true) == nil)
 
--- Outline panel (menu) built from the slugged headings
+-- Outline: a dedicated floating overlay, built from the slugged headings
 check(
   'outline items built from headings',
-  dom:find('<a href="#sample%-document" class="outline%-h1">') ~= nil
-    and dom:find('<a href="#code" class="outline%-h3">') ~= nil
+  -- the first item also carries the scroll-spy "active" class by default
+  dom:find('<a href="#sample%-document" class="outline%-h1[ "]') ~= nil
+    and dom:find('<a href="#code" class="outline%-h3[ "]') ~= nil
+)
+check('outline rail shown by default', dom:find('id="mdpv%-toc"[^>]*hidden') == nil)
+check(
+  'outline rows carry rail dashes + labels',
+  dom:find('class="toc%-bar"') ~= nil and dom:find('class="toc%-text"') ~= nil
+)
+check(
+  'outline switch offered in the menu, on',
+  dom:find('outline%-toggle"[^>]*aria%-pressed="true"') ~= nil and dom:find('outline%-toggle"[^>]*hidden') == nil
+)
+
+-- Menu: theme segmented control replaces the old cycling row
+check(
+  'theme options rendered as a segmented control',
+  dom:find('data%-theme%-opt="auto"') ~= nil and dom:find('data%-theme%-opt="dark"') ~= nil
 )
 
 -- Scroll sync + diffing plumbing
 check('blocks carry data-source-line', content:find('data-source-line="', 1, true) ~= nil)
+check('sync toggles shown on a live preview', dom:find('id="sync%-group"[^>]*hidden') == nil)
 check(
   'follow toggle visible and on',
   dom:find('follow%-toggle"[^>]*aria%-pressed="true"') ~= nil and dom:find('follow%-toggle"[^>]*hidden') == nil
+)
+check(
+  'move-cursor-on-scroll toggle off under scroll_sync = true',
+  dom:find('syncback%-toggle"[^>]*aria%-pressed="false"') ~= nil
 )
 check('typeset nodes keyed by source (morphdom)', content:find('data-mdpv-src="', 1, true) ~= nil)
 check('morphdom loaded', dom:find('vendor/morphdom%-umd%.min%.js') ~= nil)

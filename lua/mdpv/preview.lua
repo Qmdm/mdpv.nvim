@@ -15,7 +15,7 @@ local M = {}
 ---@field payload fun(): string? buffer content as JSON (SSE payload and page boot data)
 ---@field timer uv.uv_timer_t debounce timer
 ---@field scroll_timer uv.uv_timer_t? cursor-sync debounce timer
----@field on_sync fun(line: integer)? browser->editor cursor move (scroll_sync = 'both')
+---@field on_sync fun(line: integer)? browser->editor cursor move (page's "move cursor on scroll" switch)
 ---@field on_toggle fun(line: integer, checked: boolean)? browser->editor task checkbox flip
 ---@field augroup integer
 
@@ -151,22 +151,22 @@ local function setup_scroll_sync(pv, config)
       )
     end,
   })
-  -- 'both': the page POSTs a line when the user scrolls it; move the cursor
+  -- Browser -> editor: the page POSTs a line when its "move cursor on
+  -- scroll" switch is on (scroll_sync = 'both' only sets that switch's
+  -- default, so the handler is registered either way); move the cursor
   -- there. Setting last_line first suppresses the echo broadcast the
   -- resulting CursorMoved would otherwise trigger.
-  if config.scroll_sync == 'both' then
-    pv.on_sync = function(line)
-      if not (M.previews[bufnr] and vim.api.nvim_buf_is_valid(bufnr)) then
-        return
-      end
-      local wins = vim.fn.win_findbuf(bufnr)
-      if #wins == 0 then
-        return
-      end
-      line = math.max(1, math.min(line, vim.api.nvim_buf_line_count(bufnr)))
-      last_line = line
-      vim.api.nvim_win_set_cursor(wins[1], { line, 0 })
+  pv.on_sync = function(line)
+    if not (M.previews[bufnr] and vim.api.nvim_buf_is_valid(bufnr)) then
+      return
     end
+    local wins = vim.fn.win_findbuf(bufnr)
+    if #wins == 0 then
+      return
+    end
+    line = math.max(1, math.min(line, vim.api.nvim_buf_line_count(bufnr)))
+    last_line = line
+    vim.api.nvim_win_set_cursor(wins[1], { line, 0 })
   end
 end
 

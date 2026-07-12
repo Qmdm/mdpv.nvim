@@ -440,6 +440,29 @@ check('server restarts on demand', url3 ~= nil)
 local s3, body3 = get(url3)
 check('restarted preview page is 200', s3 == 200, s3)
 check('math macros ship in the boot payload', body3:find('mathbb', 1, true) ~= nil)
+
+-- Reverse sync stays wired under the default scroll_sync = true: the page's
+-- "move cursor on scroll" switch decides whether lines are POSTed, so the
+-- editor accepts them regardless of the configured mode.
+local base3, token3 = url3:match('^(http://.-)/p/(%x+)$')
+local sres3 = http({
+  '-o',
+  '/dev/null',
+  '-w',
+  '%{http_code}',
+  '--max-time',
+  '5',
+  '-X',
+  'POST',
+  '-d',
+  '{"line":2}',
+  base3 .. '/sync/' .. token3,
+})
+check('sync POST accepted under scroll_sync = true', sres3.stdout == '204', sres3.stdout)
+local moved3 = vim.wait(2000, function()
+  return vim.api.nvim_win_get_cursor(0)[1] == 2
+end, 10)
+check('cursor followed without scroll_sync = "both"', moved3, 'cursor at line ' .. vim.api.nvim_win_get_cursor(0)[1])
 require('mdpv').stop()
 check('stop clears previews', #require('mdpv').list() == 0)
 

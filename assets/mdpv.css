@@ -77,7 +77,7 @@ body {
 
 #mdpv-fab {
   position: fixed;
-  z-index: 10;
+  z-index: 11; /* above the outline panel, so the open menu overlays it */
   color: var(--mdpv-fg);
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif;
 }
@@ -102,8 +102,10 @@ body {
   left: 20px;
 }
 
-/* While dragging, JS drives left/top directly; while snapping, glide there. */
-#mdpv-fab.snapping {
+/* While dragging, JS drives left/top directly; while snapping, glide there.
+ * (Shared by the outline panel, which corner-parks the same way.) */
+#mdpv-fab.snapping,
+#mdpv-toc.snapping {
   transition: left 0.15s ease, top 0.15s ease;
 }
 
@@ -229,78 +231,302 @@ body {
   background-color: var(--mdpv-bg-subtle);
 }
 
-.fab-value {
-  font-size: 12px;
-  color: var(--mdpv-fg-muted);
+/* Grouped rows: a muted section label above each cluster of controls. */
+.fab-group {
+  margin-bottom: 4px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--mdpv-border);
 }
 
-/* Document outline: collapsible heading list inside the menu, indented by
- * level; .active marks the heading under the viewport anchor (scroll spy). */
-#outline-list {
-  min-width: 200px;
-  max-width: 300px;
-  max-height: 40vh;
-  margin-top: 4px;
-  padding-top: 4px;
-  overflow-y: auto;
-  border-top: 1px solid var(--mdpv-border);
+.fab-label {
+  padding: 4px 10px 2px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--mdpv-fg-muted);
+  text-transform: uppercase;
 }
 
-#outline-list a {
-  display: block;
-  overflow: hidden;
-  padding: 3px 10px;
-  font-size: 12px;
-  color: var(--mdpv-fg-muted);
+/* A non-clickable row (label + inline control), laid out like the buttons. */
+.fab-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 4px 10px;
+  font-size: 13px;
   white-space: nowrap;
-  text-decoration: none;
-  text-overflow: ellipsis;
+}
+
+/* Segmented theme picker; aria-pressed marks the active option. */
+#theme-seg {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  background-color: var(--mdpv-bg-subtle);
+  border: 1px solid var(--mdpv-border);
+  border-radius: 8px;
+}
+
+#fab-menu #theme-seg button {
+  width: auto;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: var(--mdpv-fg-muted);
   border-radius: 6px;
 }
 
-#outline-list a:hover {
+#fab-menu #theme-seg button:hover {
+  color: var(--mdpv-fg);
+  background: none;
+}
+
+#fab-menu #theme-seg button[aria-pressed='true'] {
+  color: var(--mdpv-fg);
+  background-color: var(--mdpv-bg);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+}
+
+/* --- Outline -------------------------------------------------------------- */
+/* A floating outline that stays out of the way. Collapsed, each heading is
+ * a small dash — longer for higher levels, accent-colored where you are —
+ * a rail that covers next to nothing and can't be mistaken for page text.
+ * Hovering it (JS adds .open after a short intent delay) or focusing into
+ * it expands the rail in place into a card with the full heading list;
+ * leaving collapses it back. Corner-parked like the menu button (the whole
+ * rail is the drag handle); when both rest in the same corner, .mdpv-evade
+ * anchors it past the button (TOC_EVADE in app.js) so the two never
+ * overlap, and the shift glides via the top/bottom transition. */
+
+#mdpv-toc {
+  position: fixed;
+  z-index: 10;
+  max-width: 280px;
+  color: var(--mdpv-fg);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif;
+  cursor: grab;
+  touch-action: none; /* pointer events drive the drag, even on touch */
+  user-select: none;
+}
+
+#mdpv-toc.dragging {
+  cursor: grabbing;
+}
+
+#mdpv-toc[data-corner='br'] {
+  right: 20px;
+  bottom: 20px;
+}
+
+#mdpv-toc[data-corner='bl'] {
+  left: 20px;
+  bottom: 20px;
+}
+
+#mdpv-toc[data-corner='tr'] {
+  top: 20px;
+  right: 20px;
+}
+
+#mdpv-toc[data-corner='tl'] {
+  top: 20px;
+  left: 20px;
+}
+
+/* Yield to the button in a shared corner: anchor past it instead. */
+#mdpv-toc[data-corner='br'].mdpv-evade,
+#mdpv-toc[data-corner='bl'].mdpv-evade {
+  bottom: 72px;
+}
+
+#mdpv-toc[data-corner='tr'].mdpv-evade,
+#mdpv-toc[data-corner='tl'].mdpv-evade {
+  top: 72px;
+}
+
+#mdpv-toc:not(.dragging):not(.snapping) {
+  transition: top 0.15s ease, bottom 0.15s ease;
+}
+
+/* The list is one element in both states; only its dress changes, so the
+ * card surface can fade in over the rail. The scrollbar stays hidden — the
+ * scroll spy keeps the active item in view. */
+#outline-list {
+  max-height: min(440px, 60vh);
+  padding: 6px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  transition: background-color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+#outline-list::-webkit-scrollbar {
+  display: none;
+}
+
+#outline-list a {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-width: 0;
+  padding: 4px 6px;
+  font-size: 12px;
+  color: var(--mdpv-fg-muted);
+  text-decoration: none;
+  border-radius: 6px;
+}
+
+/* The collapsed dashes hug whichever screen edge they're parked against. */
+#mdpv-toc[data-corner='tl'] #outline-list a,
+#mdpv-toc[data-corner='bl'] #outline-list a {
+  justify-content: flex-start;
+}
+
+.toc-bar {
+  flex: none;
+  height: 3px;
+  border-radius: 2px;
+  background-color: color-mix(in srgb, var(--mdpv-fg-muted) 60%, transparent);
+  /* faint page-background ring so a dash reads over any content */
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--mdpv-bg) 70%, transparent);
+  transition: background-color 0.15s ease; /* smooth scroll-spy handoff */
+}
+
+.outline-h1 .toc-bar {
+  width: 18px;
+}
+
+.outline-h2 .toc-bar {
+  width: 14px;
+}
+
+.outline-h3 .toc-bar {
+  width: 11px;
+}
+
+.outline-h4 .toc-bar {
+  width: 8px;
+}
+
+.outline-h5 .toc-bar {
+  width: 6px;
+}
+
+.outline-h6 .toc-bar {
+  width: 4px;
+}
+
+#outline-list a:hover .toc-bar {
+  background-color: var(--mdpv-fg);
+}
+
+#outline-list a.active .toc-bar {
+  background-color: var(--mdpv-accent-fg);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--mdpv-bg) 70%, transparent),
+    0 0 6px color-mix(in srgb, var(--mdpv-accent-fg) 50%, transparent);
+}
+
+.toc-text {
+  display: none;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* Expanded: the rail dresses up as a card and the labels take over. The
+ * background layers are scroll shadows (Lea Verou's local-attachment
+ * technique): soft inner shading appears at an edge only while more rows
+ * hide past it, so a clipped list reads as scrollable. */
+#mdpv-toc:is(.open, :focus-within) #outline-list {
+  padding: 4px;
+  background-color: var(--mdpv-bg);
+  background-image:
+    linear-gradient(var(--mdpv-bg) 30%, transparent),
+    linear-gradient(transparent, var(--mdpv-bg) 70%),
+    radial-gradient(farthest-side at 50% 0, color-mix(in srgb, var(--mdpv-fg) 20%, transparent), transparent),
+    radial-gradient(farthest-side at 50% 100%, color-mix(in srgb, var(--mdpv-fg) 20%, transparent), transparent);
+  background-position:
+    0 0,
+    0 100%,
+    0 0,
+    0 100%;
+  background-size:
+    100% 24px,
+    100% 24px,
+    100% 12px,
+    100% 12px;
+  background-repeat: no-repeat;
+  background-attachment: local, local, scroll, scroll;
+  border-color: var(--mdpv-border);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+}
+
+#mdpv-toc:is(.open, :focus-within) #outline-list a {
+  justify-content: flex-start;
+  padding: 3px 10px 3px 12px;
+}
+
+#mdpv-toc:is(.open, :focus-within) .toc-bar {
+  display: none;
+}
+
+#mdpv-toc:is(.open, :focus-within) .toc-text {
+  display: block;
+  animation: mdpv-toc-reveal 0.18s ease;
+}
+
+/* Labels slide in from the parked edge as the card opens. */
+@keyframes mdpv-toc-reveal {
+  from {
+    opacity: 0;
+    transform: translateX(var(--mdpv-toc-slide, 6px));
+  }
+}
+
+#mdpv-toc[data-corner='tl'],
+#mdpv-toc[data-corner='bl'] {
+  --mdpv-toc-slide: -6px;
+}
+
+#mdpv-toc:is(.open, :focus-within) #outline-list a:hover {
   color: var(--mdpv-fg);
   background-color: var(--mdpv-bg-subtle);
 }
 
-#outline-list a.active {
+#mdpv-toc:is(.open, :focus-within) #outline-list a.active {
   color: var(--mdpv-accent-fg);
+  background-color: color-mix(in srgb, var(--mdpv-accent-fg) 12%, transparent);
 }
 
-#outline-list .outline-h2 {
-  padding-left: 22px;
+/* Heading levels read two ways when expanded: typographic tier (h1
+ * heaviest, fading to muted) and a 12px indent per level. */
+#mdpv-toc:is(.open, :focus-within) #outline-list .outline-h1 {
+  font-weight: 600;
+  color: var(--mdpv-fg);
 }
 
-#outline-list .outline-h3 {
-  padding-left: 34px;
+#mdpv-toc:is(.open, :focus-within) #outline-list .outline-h2 {
+  padding-left: 24px;
+  font-weight: 500;
+  color: color-mix(in srgb, var(--mdpv-fg) 60%, var(--mdpv-fg-muted));
 }
 
-#outline-list .outline-h4 {
-  padding-left: 46px;
+#mdpv-toc:is(.open, :focus-within) #outline-list .outline-h3 {
+  padding-left: 36px;
 }
 
-#outline-list .outline-h5 {
-  padding-left: 58px;
+#mdpv-toc:is(.open, :focus-within) #outline-list .outline-h4 {
+  padding-left: 48px;
 }
 
-#outline-list .outline-h6 {
-  padding-left: 70px;
+#mdpv-toc:is(.open, :focus-within) #outline-list .outline-h5 {
+  padding-left: 60px;
 }
 
-/* Caret on the outline row: points right collapsed, down expanded. */
-.fab-caret {
-  width: 0;
-  height: 0;
-  border-top: 5px solid currentColor;
-  border-right: 4px solid transparent;
-  border-left: 4px solid transparent;
-  opacity: 0.6;
-  transition: transform 0.15s;
-  transform: rotate(-90deg);
-}
-
-[aria-expanded='true'] .fab-caret {
-  transform: none;
+#mdpv-toc:is(.open, :focus-within) #outline-list .outline-h6 {
+  padding-left: 72px;
 }
 
 /* Mini switch shown on toggle rows; aria-pressed drives the state. */
@@ -626,8 +852,22 @@ body.mdpv-wide main {
   border-left: 4px solid var(--mdpv-attention);
 }
 
+@media (prefers-reduced-motion: reduce) {
+  #mdpv-fab.snapping,
+  #mdpv-toc.snapping,
+  #mdpv-toc:not(.dragging):not(.snapping),
+  #outline-list {
+    transition: none;
+  }
+
+  #mdpv-toc:is(.open, :focus-within) .toc-text {
+    animation: none;
+  }
+}
+
 @media print {
-  #mdpv-fab {
+  #mdpv-fab,
+  #mdpv-toc {
     display: none;
   }
   main {
