@@ -148,20 +148,13 @@
       `<div class="mdpv-math mdpv-math-display"${self.renderAttrs(tokens[i])}>${mdi.utils.escapeHtml(tokens[i].content)}</div>`;
   }
 
+  // No highlight() hook: fenced code renders escaped with a language-x class
+  // and highlightCode() rewrites it in place once highlight.js lazy-loads.
   const md = window
     .markdownit({
       html: true, // raw HTML passes through, DOMPurify sanitizes after
       linkify: true, // GFM autolinks bare URLs
       typographer: false, // GitHub does not smart-quote
-      highlight(code, lang) {
-        const l = (lang || '').split(/\s+/)[0].toLowerCase();
-        if (l && window.hljs.getLanguage(l)) {
-          try {
-            return window.hljs.highlight(code, { language: l, ignoreIllegals: true }).value;
-          } catch (_) { /* fall through to plain escaping */ }
-        }
-        return ''; // markdown-it escapes it
-      },
     })
     .use(window.markdownitTaskLists) // emits GitHub's task-list-item classes
     .use(window.markdownitFootnote);
@@ -445,6 +438,28 @@
       loadAsset('link', { rel: 'stylesheet', href: `/assets/vendor/katex/katex.min.css?v=${V}` }),
     ]));
 
+  // highlight.js is ~130 KB and plenty of documents carry no fenced code, so
+  // it lazy-loads the same way. Unknown languages keep markdown-it's escaped
+  // output, exactly as the old synchronous path did.
+  let hljsReady = null;
+  const ensureHljs = () => (hljsReady ??= loadAsset('script', { src: `/assets/vendor/highlight.min.js?v=${V}` }));
+
+  function highlightCode(root, gen) {
+    const nodes = root.querySelectorAll('pre > code[class*="language-"]:not(.mdpv-hl)');
+    if (nodes.length === 0) return;
+    ensureHljs().then(() => {
+      if (gen !== generation) return;
+      for (const code of nodes) {
+        code.classList.add('mdpv-hl'); // processed, even when the language is unknown
+        const lang = ((code.className.match(/language-(\S+)/) || [])[1] || '').toLowerCase();
+        if (!lang || !window.hljs.getLanguage(lang)) continue;
+        try {
+          code.innerHTML = window.hljs.highlight(code.textContent, { language: lang, ignoreIllegals: true }).value;
+        } catch (_) { /* leave the escaped source */ }
+      }
+    }, () => {});
+  }
+
   // Typeset targets are normalized to placeholder <div>/<span>s carrying
   // their source in data-mdpv-src *before* the DOM diff, so a typeset result
   // and its regenerated placeholder share a tag and the differ can pair them
@@ -554,6 +569,31 @@
   let firstRender = true;
   let generation = 0;
 
+  // Scroll-sync anchors, cached per render. They sit in document order with
+  // non-decreasing source lines and offsets, so both lookups binary-search
+  // instead of walking (and measuring) every mapped block per event.
+  let syncEls = [];
+  const refreshSyncEls = () => {
+    syncEls = [...$content.querySelectorAll('[data-source-line]')];
+  };
+
+  // Rightmost index in syncEls whose measure(el) <= limit, or -1.
+  function bisect(limit, measure) {
+    let lo = 0;
+    let hi = syncEls.length - 1;
+    let found = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (measure(syncEls[mid]) <= limit) {
+        found = mid;
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    return found;
+  }
+
   function render(src) {
     if (src === lastSource) return;
     lastSource = src;
@@ -595,6 +635,17 @@
             if (line) from.setAttribute('data-source-line', line);
             return false;
           }
+          if (
+            from.tagName === 'CODE'
+            && from.classList.contains('mdpv-hl')
+            && from.textContent === to.textContent
+            && from.getAttribute('class').replace(/\s*\bmdpv-hl\b/, '') === (to.getAttribute('class') || '')
+          ) {
+            // Unchanged code block: keep the highlighted DOM, refresh its line.
+            const line = to.getAttribute('data-source-line');
+            if (line) from.setAttribute('data-source-line', line);
+            return false;
+          }
           if (from.tagName === 'DETAILS' && from.open !== to.open) {
             to.open = from.open; // keep reader-toggled state across updates
           }
@@ -604,7 +655,9 @@
     } else {
       $content.innerHTML = next.innerHTML; // fallback: full swap
     }
+    refreshSyncEls();
 
+    highlightCode($content, gen);
     if (FEATURES.math !== false) typesetMath($content, gen);
     if (FEATURES.mermaid !== false) typesetMermaid($content, gen);
 
@@ -793,16 +846,13 @@
 
   function scrollToLine(line) {
     progUntil = performance.now() + 1200; // smooth scroll settles well within this
-    let prev = null;
-    let next = null;
-    for (const el of $content.querySelectorAll('[data-source-line]')) {
-      if (+el.dataset.sourceLine <= line) prev = el;
-      else { next = el; break; }
-    }
-    if (!prev) {
+    const i = bisect(line, (el) => +el.dataset.sourceLine);
+    if (i === -1) {
       window.scrollTo({ top: 0, behavior: 'smooth' });
       return;
     }
+    const prev = syncEls[i];
+    const next = syncEls[i + 1];
     let y = prev.getBoundingClientRect().top + window.scrollY;
     if (next) {
       const prevLine = +prev.dataset.sourceLine;
@@ -818,17 +868,15 @@
   // Inverse of scrollToLine: which source line sits at the viewport anchor?
   function lineAtAnchor() {
     const anchor = window.scrollY + window.innerHeight * ANCHOR;
-    let prev = null;
-    let next = null;
-    for (const el of $content.querySelectorAll('[data-source-line]')) {
-      if (el.getBoundingClientRect().top + window.scrollY <= anchor) prev = el;
-      else { next = el; break; }
-    }
-    if (!prev) return 1;
+    const top = (el) => el.getBoundingClientRect().top + window.scrollY;
+    const i = bisect(anchor, top);
+    if (i === -1) return 1;
+    const prev = syncEls[i];
+    const next = syncEls[i + 1];
     const prevLine = +prev.dataset.sourceLine;
     if (!next) return prevLine;
-    const a = prev.getBoundingClientRect().top + window.scrollY;
-    const b = next.getBoundingClientRect().top + window.scrollY;
+    const a = top(prev);
+    const b = top(next);
     const span = +next.dataset.sourceLine - prevLine;
     if (b <= a || span <= 0) return prevLine;
     return Math.max(1, Math.round(prevLine + span * ((anchor - a) / (b - a))));

@@ -32,6 +32,7 @@ local state = {
   -- Renderer feature flags (math/mermaid/emoji) shipped to static .md pages,
   -- which have no preview payload to carry them.
   features = { math = true, mermaid = true, emoji = true },
+  template = nil, ---@type string? assets/index.html, read once per server run
 }
 
 local plugin_root = vim.fn.fnamemodify(debug.getinfo(1, 'S').source:sub(2), ':h:h:h')
@@ -40,11 +41,14 @@ local asset_dir = plugin_root .. '/assets'
 local REASONS = {
   [200] = 'OK',
   [204] = 'No Content',
+  [206] = 'Partial Content',
+  [304] = 'Not Modified',
   [400] = 'Bad Request',
   [403] = 'Forbidden',
   [404] = 'Not Found',
   [405] = 'Method Not Allowed',
   [413] = 'Payload Too Large',
+  [416] = 'Range Not Satisfiable',
   [431] = 'Request Header Fields Too Large',
   [500] = 'Internal Server Error',
 }
@@ -76,9 +80,10 @@ local MIME = {
   woff2 = 'font/woff2',
 }
 
-local MAX_FILE_BYTES = 64 * 1024 * 1024 -- refuse to serve files larger than this
+local MAX_FILE_BYTES = 64 * 1024 * 1024 -- refuse to buffer files larger than this in memory
 local MAX_HEADER_BYTES = 16 * 1024
 local MAX_BODY_BYTES = 4 * 1024 -- POST bodies are tiny sync messages
+local CHUNK_BYTES = 256 * 1024 -- streamed file responses go out in pieces this size
 
 --- Theme -> stylesheets injected into the page shell.
 local THEME_CSS = {
@@ -115,13 +120,19 @@ local function write_and_close(sock, data)
 end
 
 local function respond(sock, status, headers, body)
-  body = body or (status ~= 200 and status ~= 204 and (REASONS[status] or '') or '')
+  if status == 304 then
+    body = '' -- a 304 must not carry content (nor a Content-Length claiming so)
+  else
+    body = body or (status ~= 200 and status ~= 204 and (REASONS[status] or '') or '')
+  end
   local lines = { ('HTTP/1.1 %d %s'):format(status, REASONS[status] or 'OK') }
   headers = headers or {}
   if not headers['Content-Type'] then
     headers['Content-Type'] = 'text/plain; charset=utf-8'
   end
-  headers['Content-Length'] = tostring(#body)
+  if status ~= 304 then
+    headers['Content-Length'] = tostring(#body)
+  end
   headers['Connection'] = 'close'
   for k, v in pairs(headers) do
     lines[#lines + 1] = k .. ': ' .. v
@@ -153,6 +164,49 @@ local function percent_decode(s)
   end))
 end
 
+--- Case-insensitive request-header lookup; `name` must be given lowercase.
+local function req_header(head, name)
+  for k, v in head:gmatch('\r\n([%w%-]+):[ \t]*([^\r\n]*)') do
+    if k:lower() == name then
+      return (v:gsub('%s+$', ''))
+    end
+  end
+end
+
+local function http_date(sec)
+  return os.date('!%a, %d %b %Y %H:%M:%S GMT', sec)
+end
+
+--- Parse a single-range `bytes=a-b` header value against a file of `size`
+--- bytes. Returns 0-based inclusive first,last; nil to serve the whole file
+--- (absent, malformed, or multi-range headers degrade to a full 200); or
+--- 'unsatisfiable' (start beyond EOF) which must answer 416.
+local function parse_range(spec, size)
+  if not spec or size == 0 then
+    return nil
+  end
+  local a, b = spec:match('^%s*bytes%s*=%s*(%d*)%-(%d*)%s*$')
+  if not a or (a == '' and b == '') then
+    return nil
+  end
+  if a == '' then
+    local n = tonumber(b) -- suffix form: the last n bytes
+    if n == 0 then
+      return 'unsatisfiable'
+    end
+    return math.max(0, size - n), size - 1
+  end
+  local first = tonumber(a)
+  if first >= size then
+    return 'unsatisfiable'
+  end
+  local last = b ~= '' and math.min(tonumber(b), size - 1) or size - 1
+  if last < first then
+    return nil
+  end
+  return first, last
+end
+
 local function read_file_async(path, cb)
   uv.fs_open(path, 'r', 292, function(err, fd) -- 292 = 0444
     if err or not fd then
@@ -178,17 +232,117 @@ local function read_file_async(path, cb)
   end)
 end
 
-local function serve_file(sock, path, cache_control)
+--- Pump fd's [first, last] byte range to sock after `head` (response head
+--- including the blank line). Closes fd and sock when done or on any error.
+local function stream_body(sock, fd, first, last, head)
+  local finished = false
+  local function finish(broken)
+    if finished then
+      return
+    end
+    finished = true
+    uv.fs_close(fd, function() end)
+    if broken then
+      close_sock(sock)
+    end
+  end
+  local offset = first
+  local function pump()
+    if sock:is_closing() then
+      return finish(true)
+    end
+    local want = math.min(CHUNK_BYTES, last - offset + 1)
+    if want <= 0 then
+      finish(false)
+      close_sock(sock) -- Connection: close, and the last write has flushed
+      return
+    end
+    uv.fs_read(fd, want, offset, function(rerr, data)
+      if rerr or not data or #data == 0 then
+        return finish(true) -- truncated mid-stream (file shrank?): drop the socket
+      end
+      offset = offset + #data
+      local ok = pcall(sock.write, sock, data, function(werr)
+        if werr then
+          return finish(true)
+        end
+        pump() -- next chunk only after this one flushed: natural backpressure
+      end)
+      if not ok then
+        finish(true)
+      end
+    end)
+  end
+  local ok = pcall(sock.write, sock, head, function(werr)
+    if werr then
+      return finish(true)
+    end
+    pump()
+  end)
+  if not ok then
+    finish(true)
+  end
+end
+
+--- Serve a file from disk, streamed in chunks: no whole-file buffering, byte
+--- ranges so media can seek, and Last-Modified revalidation so a reload of an
+--- unchanged file costs a 304 instead of a re-download.
+---@param req { head_only: boolean?, range: string?, if_modified_since: string? }?
+local function serve_file(sock, path, cache_control, req)
+  req = req or {}
   local ext = path:match('%.([%w]+)$')
   local mime = MIME[ext and ext:lower() or ''] or 'application/octet-stream'
-  read_file_async(path, function(data, err)
-    if not data then
-      return respond(sock, err == 'toobig' and 413 or 404)
+  uv.fs_open(path, 'r', 292, function(err, fd) -- 292 = 0444
+    if err or not fd then
+      return respond(sock, 404)
     end
-    respond(sock, 200, {
-      ['Content-Type'] = mime,
-      ['Cache-Control'] = cache_control or 'no-cache',
-    }, data)
+    uv.fs_fstat(fd, function(serr, stat)
+      if serr or not stat or stat.type ~= 'file' then
+        uv.fs_close(fd, function() end)
+        return respond(sock, 404)
+      end
+      local modified = http_date(stat.mtime.sec)
+      if req.if_modified_since == modified then
+        uv.fs_close(fd, function() end)
+        return respond(sock, 304, {
+          ['Content-Type'] = mime,
+          ['Cache-Control'] = cache_control or 'no-cache',
+          ['Last-Modified'] = modified,
+        })
+      end
+      local first, last = parse_range(req.range, stat.size)
+      if first == 'unsatisfiable' then
+        uv.fs_close(fd, function() end)
+        return respond(sock, 416, { ['Content-Range'] = 'bytes */' .. stat.size })
+      end
+      local headers = {
+        ['Content-Type'] = mime,
+        ['Cache-Control'] = cache_control or 'no-cache',
+        ['Last-Modified'] = modified,
+        ['Accept-Ranges'] = 'bytes',
+        ['Connection'] = 'close',
+      }
+      local status = 200
+      if first then
+        status = 206
+        headers['Content-Range'] = ('bytes %d-%d/%d'):format(first, last, stat.size)
+      else
+        first, last = 0, stat.size - 1
+      end
+      headers['Content-Length'] = tostring(math.max(0, last - first + 1))
+      local lines = { ('HTTP/1.1 %d %s'):format(status, REASONS[status]) }
+      for k, v in pairs(headers) do
+        lines[#lines + 1] = k .. ': ' .. v
+      end
+      lines[#lines + 1] = ''
+      lines[#lines + 1] = ''
+      local head = table.concat(lines, '\r\n')
+      if req.head_only or last < first then
+        uv.fs_close(fd, function() end)
+        return write_and_close(sock, head)
+      end
+      stream_body(sock, fd, first, last, head)
+    end)
   end)
 end
 
@@ -229,10 +383,7 @@ local CSP = table.concat({
 }, '; ')
 
 local function page_shell(title, boot_json, cb)
-  read_file_async(asset_dir .. '/index.html', function(tpl)
-    if not tpl then
-      return cb(nil)
-    end
+  local function build(tpl)
     local subst = {
       TITLE = html_escape(title),
       THEME = state.theme,
@@ -245,6 +396,16 @@ local function page_shell(title, boot_json, cb)
       BOOT = (boot_json:gsub('<', '\\u003c')),
     }
     cb((tpl:gsub('{{([%u_]+)}}', subst)))
+  end
+  if state.template then
+    return build(state.template)
+  end
+  read_file_async(asset_dir .. '/index.html', function(tpl)
+    if not tpl then
+      return cb(nil)
+    end
+    state.template = tpl
+    build(tpl)
   end)
 end
 
@@ -412,6 +573,11 @@ local function handle_request(sock, head, body)
   if method ~= 'GET' and method ~= 'HEAD' then
     return respond(sock, 405, { Allow = 'GET, HEAD' })
   end
+  local req = {
+    head_only = method == 'HEAD',
+    range = req_header(head, 'range'),
+    if_modified_since = req_header(head, 'if-modified-since'),
+  }
 
   if path == '/' then
     return route_index(sock)
@@ -433,7 +599,7 @@ local function handle_request(sock, head, body)
     if not is_confined(rel) then
       return respond(sock, 403)
     end
-    return serve_file(sock, asset_dir .. '/' .. rel, 'public, max-age=31536000, immutable')
+    return serve_file(sock, asset_dir .. '/' .. rel, 'public, max-age=31536000, immutable', req)
   end
 
   local ftoken, frel = path:match('^/f/(%x+)/(.+)$')
@@ -455,7 +621,7 @@ local function handle_request(sock, head, body)
     if (low:match('%.md$') or low:match('%.markdown$')) and not has_param(query, 'raw') then
       return route_static_md(sock, ftoken, frel, fpath)
     end
-    return serve_file(sock, fpath)
+    return serve_file(sock, fpath, nil, req)
   end
 
   return respond(sock, 404)
@@ -674,7 +840,7 @@ function M.stop()
     close_sock(state.tcp)
     state.tcp = nil
   end
-  state.host, state.port = nil, nil
+  state.host, state.port, state.template = nil, nil, nil
 end
 
 return M

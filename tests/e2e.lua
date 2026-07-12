@@ -139,6 +139,41 @@ check('?raw=1 serves markdown source', status == 200 and body:find('Content%-Typ
 status, body = get(base .. '/f/' .. token .. '/second.md?rawr')
 check('?rawr is not ?raw (renders page)', status == 200 and body:find('Content%-Type: text/html') ~= nil, status)
 
+-- --- Byte ranges + revalidation (media seeking, cheap reloads) ---------------
+
+local img = base .. '/f/' .. token .. '/img.png'
+status, body = get(img)
+check('file responses advertise Accept-Ranges', body:find('Accept%-Ranges: bytes') ~= nil)
+local lastmod = body:match('Last%-Modified: ([^\r\n]+)')
+check('file responses carry Last-Modified', lastmod ~= nil)
+local size = tonumber(body:match('Content%-Length: (%d+)') or 0)
+
+status, body = get(img, { '-H', 'Range: bytes=0-3' })
+check('range request answers 206', status == 206, status)
+check('206 carries Content-Range', body:find('Content%-Range: bytes 0%-3/' .. size, 1, false) ~= nil)
+check('206 length is the slice', body:find('Content%-Length: 4') ~= nil)
+check('206 body starts at byte 0', body:find('\137PNG', 1, true) ~= nil) -- PNG magic = bytes 0-3
+
+status, body = get(img, { '-H', 'Range: bytes=' .. (size - 2) .. '-' })
+check('open-ended range answers 206', status == 206 and body:find('Content%-Length: 2') ~= nil, status)
+status, body = get(img, { '-H', 'Range: bytes=-2' })
+check('suffix range answers 206', status == 206 and body:find('Content%-Length: 2') ~= nil, status)
+status, body = get(img, { '-H', 'Range: bytes=999999999-' })
+check('range past EOF answers 416', status == 416 and body:find('Content%-Range: bytes %*/' .. size) ~= nil, status)
+status, body = get(img, { '-H', 'Range: bytes=0-1,4-5' })
+check('multi-range degrades to full 200', status == 200 and body:find('Content%-Length: ' .. size) ~= nil, status)
+
+status, body = get(img, { '-H', 'If-Modified-Since: ' .. (lastmod or '') })
+check('unchanged file revalidates as 304', status == 304, status)
+check('304 carries no body', body:match('\r?\n\r?\n(.*)$') == '') -- text=true maps \r\n to \n
+
+local hres = http({ '-i', '-I', '--max-time', '5', img })
+check(
+  'HEAD answers headers only',
+  hres.stdout:find('HTTP/1%.1 200') ~= nil and hres.stdout:find('Content%-Length: ' .. size) ~= nil,
+  hres.stdout:match('^[^\r\n]*')
+)
+
 -- --- SSE: initial content + live edit ---------------------------------------
 
 local sse_done = false

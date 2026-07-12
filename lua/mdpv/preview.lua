@@ -76,6 +76,9 @@ local function push_now(pv)
   if not M.previews[pv.bufnr] then
     return
   end
+  if next(pv.clients) == nil then
+    return -- nobody listening: skip the encode; a client connecting later gets a fresh push
+  end
   local json = pv.payload()
   if json then
     server.broadcast(pv.token, 'update', json)
@@ -155,6 +158,9 @@ function M.open(bufnr, config)
       group = pv.augroup,
       buffer = bufnr,
       callback = function()
+        if next(pv.clients) == nil then
+          return -- no browser attached: nothing to scroll
+        end
         local line = vim.api.nvim_win_get_cursor(0)[1]
         if line == last_line then
           return -- column-only movement (or a browser-initiated move): nothing to sync
