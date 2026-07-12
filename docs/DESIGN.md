@@ -82,14 +82,18 @@ only non-authored files.
 `vim.schedule` → `nvim_buf_get_lines` → `vim.json.encode` → one SSE frame
 written to every attached client → browser re-renders (~10 ms for a typical
 README), restoring scroll position and skipping if content is unchanged.
+When no SSE client is attached, the pipeline stops at the timer: nothing is
+read or encoded.
 
 ## 4. Key decisions
 
 **Pure `vim.uv`, HTTP hand-parsed.** Neovim 0.12 has an HTTP *client*
-(`vim.net.request`) but no server API, so the server is ~150 lines over
-`uv_tcp`: accumulate until `\r\n\r\n`, parse the request line, route GETs.
-No keep-alive (each response closes; SSE sockets persist). This is the whole
-protocol surface a preview needs.
+(`vim.net.request`) but no server API, so the server is hand-rolled over
+`uv_tcp`: accumulate until `\r\n\r\n`, parse the request line, route.
+`mdpv.server` owns routing/SSE/connections, with the wire-level helpers in
+`mdpv.http` and file responses (streaming, byte ranges, 304 revalidation) in
+`mdpv.files`. No keep-alive (each response closes; SSE sockets persist).
+This is the whole protocol surface a preview needs.
 
 **SSE instead of WebSocket.** Updates flow one way (editor → browser).
 Server-Sent Events are plain HTTP — no RFC 6455 handshake/frame/mask code to
@@ -180,10 +184,10 @@ with `securityLevel: 'strict'`. Invalid TeX renders red in place; an invalid
 diagram keeps its source block, like any unknown fence. `math` also accepts a
 table of KaTeX options (`{ macros = … }`), shipped to the page in the feature
 flags and copied per block so `\gdef` can't make rendering order-dependent.
-Rendered diagrams get
-hover pan/zoom controls (± / reset, drag to pan while zoomed, double-click to
-reset) — a CSS transform on the svg, so the typeset node morphdom preserves
-keeps its view across edits elsewhere.
+Rendered diagrams get hover pan/zoom controls (±/reset, drag to pan while
+zoomed, double-click to reset); the view is a CSS transform on the svg inside
+the morphdom-preserved typeset node, so it survives edits elsewhere and
+resets naturally when the diagram's source changes.
 
 **Scroll sync over the existing SSE stream.** Every block element carries
 `data-source-line` (markdown-it `token.map`, offset by the stripped
@@ -191,19 +195,23 @@ frontmatter). `CursorMoved` autocmds debounce 80 ms and broadcast the cursor
 line; the page scrolls to the nearest mapped element, interpolating between
 neighbours so long paragraphs track smoothly, aimed at the upper third of the
 viewport. It follows the *cursor*, not the topline — the cursor is where the
-user is working. The block under the cursor gets a gutter marker
-(`.mdpv-cursor`, re-applied per render since the diff strips it), the outline
-highlights the enclosing heading, and a cursor parked on a heading line
-mirrors its slug into the URL hash via `replaceState` (deep-linkable, no
-scroll, no history spam). The floating menu toggles it (persisted in
-localStorage);
-`scroll_sync = false` removes the toggle entirely. The same menu carries the
-connection dot, a collapsible document outline (built per render from the
-slugged headings, scroll-spied via the same binary search, suppressed while a
-programmatic glide is in flight so the clicked item stays lit), plus
-per-browser theme, full-width, and go-to-top controls, behind a
-Next.js-devtools-style round button that can be dragged to any corner — the
-page itself stays chrome-free, like a rendered file on GitHub.
+user is working. Following comes with position feedback: the block under the
+cursor gets a gutter marker (`.mdpv-cursor`, re-applied per render since the
+diff strips it), the outline highlights the enclosing heading, and a cursor
+parked on a heading line mirrors its slug into the URL hash via
+`replaceState` (deep-linkable, no scroll, no history spam). The follow
+toggle turns all of it off per browser (persisted in localStorage);
+`scroll_sync = false` removes the toggle entirely.
+
+**One floating button instead of page chrome.** The page itself stays
+chrome-free, like a rendered file on GitHub; everything interactive lives
+behind a Next.js-devtools-style round button that can be dragged to any
+corner. Its menu carries the connection dot, the follow toggle, a
+collapsible document outline (rebuilt per render from the slugged headings,
+scroll-spied via the same binary search as scroll sync, and suppressed while
+a programmatic glide is in flight so a clicked item stays lit — targets near
+the page bottom can never reach the spy anchor), plus per-browser theme,
+full-width, and go-to-top controls.
 
 **Bidirectional sync (`scroll_sync = 'both'`) without feedback loops.** User
 scrolls (debounced 150 ms) invert the line mapping at the viewport anchor and

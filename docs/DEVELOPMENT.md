@@ -12,27 +12,32 @@ nvim --clean --headless -l tests/interact.lua # task-checkbox click round trip (
 ```
 
 - `e2e.lua` needs `curl`.
-- The rest need a `chromium` binary; `sync.lua` and `interact.lua` also need
-  Node 22+ (for its built-in WebSocket). All skip cleanly when a binary is
-  missing.
+- The rest need a `chromium` binary (or set `$MDPV_CHROME`); `sync.lua` and
+  `interact.lua` also need Node 22+ (for its built-in WebSocket). All skip
+  cleanly when a binary is missing.
+- `tests/cdp.js` is the shared DevTools-protocol driver — dependency-free,
+  spawned by the CDP-based suites.
 
 ## Formatting & lint
 
-Lua is formatted with [StyLua](https://github.com/JohnnyMorganz/StyLua)
-(config in `stylua.toml`) and linted with
-[lua-language-server](https://github.com/LuaLS/lua-language-server)
-(config in `.luarc.json` — it resolves the `vim`/`uv` types from the Neovim
-runtime):
+One gate runs everything:
 
 ```sh
-stylua .                                        # format
-stylua --check .                                # verify formatting
-lua-language-server --check . --checklevel=Information  # lint (0 findings expected)
+./scripts/check.sh
 ```
 
+That is: [StyLua](https://github.com/JohnnyMorganz/StyLua) in check mode
+(config in `stylua.toml`; run `stylua lua/ tests/` to format),
+`node --check` on the hand-written JS, and a headless
+[lua-language-server](https://github.com/LuaLS/lua-language-server) run
+(0 findings expected). Note the script resolves `$VIMRUNTIME` from Neovim
+into a temporary copy of `.luarc.json` first — the headless checker does not
+expand it, so a bare `lua-language-server --check .` reports spurious
+undefined-`vim` findings.
+
 The frontend (`assets/app.js`, `assets/mdpv.css`, `assets/index.html`) is
-hand-formatted — no Prettier config on purpose; `node --check assets/app.js`
-guards syntax, and the test suites exercise the rest.
+hand-formatted — no Prettier config on purpose; `node --check` guards syntax
+and the test suites exercise the rest.
 
 ## Vendored assets
 

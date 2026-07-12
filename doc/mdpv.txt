@@ -19,10 +19,10 @@ CONTENTS                                                       *mdpv-contents*
 1. INTRODUCTION                                       *mdpv* *mdpv-intro*
 
 mdpv.nvim renders the current buffer in a browser tab, live, styled with
-GitHub's actual CSS and GitHub's exact markup — alerts, Obsidian callouts,
-task lists, footnotes, heading anchors, KaTeX math, Mermaid diagrams, emoji
-shortcodes, frontmatter tables. It runs a pure-Lua HTTP + SSE server on
-|vim.uv|: no Node, no Deno, no Python, no build step.
+GitHub's actual CSS and GitHub's exact markup — alerts and Obsidian callouts,
+task lists (clickable), wikilinks, footnotes, heading anchors, KaTeX math,
+Mermaid diagrams, emoji shortcodes, frontmatter tables. It runs a pure-Lua
+HTTP + SSE server on |vim.uv|: no Node, no Deno, no Python, no build step.
 
 Any number of buffers can be previewed at once; each gets an unguessable URL
 on one shared, localhost-only server.
@@ -67,8 +67,8 @@ Calling setup() is optional. Defaults: >lua
                            -- { macros = { ['\\RR'] = '\\mathbb{R}' } }
     mermaid = true,        -- ```mermaid diagrams
     emoji = true,          -- :shortcode: expansion
-    wikilinks = true,      -- [[page]] links + ![[image]] embeds, Obsidian style
-    reload_images = true,  -- refresh images in previews when they change on disk
+    wikilinks = true,      -- [[page]] links + ![[image]] embeds
+    reload_images = true,  -- refresh images in previews on disk change
     scroll_sync = true,    -- see |mdpv-sync|; true | false | 'both'
   })
 <
@@ -99,10 +99,11 @@ Calling setup() is optional. Defaults: >lua
 
 With `scroll_sync = true` (default) the page follows your cursor line,
 interpolating between blocks for smooth tracking. The block under the cursor
-carries a subtle accent bar in the left gutter, and when the cursor sits on
-a heading line the page's URL hash follows it — copy the address bar for a
-deep link. "Follow cursor" in the page's floating menu (bottom right)
-toggles all of this per browser (persisted in localStorage).
+carries a subtle accent bar in the left gutter, the outline (|mdpv-menu|)
+highlights the enclosing heading, and when the cursor sits on a heading line
+the page's URL hash follows it — copy the address bar for a deep link.
+"Follow cursor" in the floating menu toggles all of this per browser
+(persisted in localStorage).
 
 With `scroll_sync = 'both'`, scrolling the page also moves the Neovim cursor
 to the line under the upper third of the viewport. Echo suppression on both
@@ -111,38 +112,70 @@ ends prevents feedback loops. Off entirely with `scroll_sync = false`.
 ==============================================================================
 7. THE PREVIEW PAGE                                             *mdpv-page*
 
-- Content renders in the browser (markdown-it + GitHub markup passes), so
-  Neovim never parses markdown; edits are debounced and streamed over SSE.
-- GitHub's five alerts (`> [!NOTE]`…) render exactly as GitHub does, and the
-  full Obsidian callout set rides on top (obsidian.md/help/callouts): 13
-  types plus their aliases, custom titles after the marker, folding
-  (`[!faq]-` starts collapsed, `[!tip]+` starts expanded), and nesting.
-- Task-list checkboxes are clickable: ticking one flips the `[ ]`/`[x]` on
-  that source line in the buffer (which must be 'modifiable'). Statically
-  rendered .md files keep them read-only, like on GitHub.
-- Code blocks show a copy button on hover, like on GitHub.
-- A floating button (bottom right by default; drag it to any corner) shows
-  the connection state and opens a menu: follow cursor, document outline
-  (scroll-spied; click a heading to jump), theme (auto/light/dark), full
-  width, go to top. Choices and the button's corner persist per browser in
-  localStorage.
-- Relative images and links resolve against the file's directory (and its
-  subtree; links pointing above it are not served). A relative link to another
-  `.md` file renders as a page too; append `?raw` for the raw file.
-- Obsidian wikilinks work the same way: `[[page]]` resolves to `page.md`
-  next to the file, with `[[page|alias]]`, `[[page#heading]]`, and image
-  embeds `![[img.png]]`. `wikilinks = false` renders them literally, like
-  GitHub outside wikis.
-- Images and media the page has loaded are watched on disk; regenerating one
-  (a screenshot, a rendered diagram) refreshes it in place in every open
-  preview. Disable with `reload_images = false`.
-- Raw HTML is sanitized with DOMPurify; pages carry a strict CSP; the server
-  binds localhost only and every route is token-gated.
-- KaTeX and Mermaid are vendored but fetched only when a document uses them.
-  Rendered diagrams show pan/zoom controls on hover: zoom in/out, drag to
-  pan while zoomed, double-click (or the reset button) to restore.
-- Updates are DOM-diffed (morphdom): images don't reload, open <details>
-  stay open, and unchanged math/diagrams are not re-typeset.
+Content renders in the browser (markdown-it plus GitHub markup passes), so
+Neovim never parses markdown; edits are debounced, streamed over SSE, and
+DOM-diffed into the page — images don't reload, open <details> stay open,
+and unchanged math, diagrams, and highlighted code are not re-rendered.
+
+ALERTS & CALLOUTS                                          *mdpv-callouts*
+
+GitHub's five alerts (`> [!NOTE]` …) render exactly as GitHub does, and the
+full Obsidian callout set (obsidian.md/help/callouts) rides on top: 13 types
+plus their aliases, custom titles after the marker, folding (`[!faq]-`
+starts collapsed, `[!tip]+` starts expanded), and nesting. Where the two
+vocabularies collide (`important`, `caution`), GitHub wins; unknown types
+stay plain blockquotes.
+
+WIKILINKS                                                 *mdpv-wikilinks*
+
+`[[page]]` resolves to `page.md` next to the file, with `[[page|alias]]`,
+`[[page#heading]]`, and image embeds `![[img.png]]`. Set
+`wikilinks = false` to render them literally, like GitHub outside wikis.
+
+TASK LISTS                                               *mdpv-checkboxes*
+
+Checkboxes in a live preview are clickable: ticking one flips the
+`[ ]`/`[x]` on that source line in the buffer (which must be 'modifiable').
+Statically rendered .md files keep them read-only, like on GitHub.
+
+CODE                                                           *mdpv-code*
+
+Fenced code is highlighted with highlight.js (loaded lazily, on the first
+block that needs it) and every block shows a copy button on hover.
+
+MATH & DIAGRAMS                                                *mdpv-math*
+
+KaTeX and Mermaid are vendored but fetched only when a document uses them.
+`math` accepts a table of KaTeX options — e.g. macros, see |mdpv-config|.
+Rendered diagrams show pan/zoom controls on hover: zoom in/out, drag to pan
+while zoomed, double-click (or the reset button) to restore.
+
+FILES & LINKS                                                 *mdpv-files*
+
+Relative images and links resolve against the file's directory (and its
+subtree; links pointing above it are not served). A relative link to
+another `.md` file renders as a page too; append `?raw` for the raw file.
+Media is served with byte ranges, so video and audio can seek.
+
+LIVE IMAGE RELOAD                                            *mdpv-images*
+
+Images and media the page has loaded are watched on disk; regenerating one
+(a screenshot, a rendered diagram) refreshes it in place in every open
+preview. Disable with `reload_images = false`.
+
+THE FLOATING MENU                                              *mdpv-menu*
+
+A floating button (bottom right by default; drag it to any corner) shows
+the connection state and opens the page menu: follow cursor, document
+outline (scroll-spied; click a heading to jump), theme (auto/light/dark),
+full width, go to top. Choices and the button's corner persist per browser
+in localStorage.
+
+SECURITY                                                   *mdpv-security*
+
+Raw HTML is sanitized with DOMPurify; pages carry a strict CSP; the server
+binds localhost only and every route is token-gated. Path traversal (`..`)
+is rejected on all file routes.
 
 ==============================================================================
 8. HEALTH                                                     *mdpv-health*

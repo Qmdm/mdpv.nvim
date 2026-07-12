@@ -11,41 +11,52 @@ styled with GitHub's actual CSS.
 
 ## Features
 
-- **`:Preview`** opens a live browser preview of the current buffer — edits
-  stream as you type (`:s`, undo, and LSP formatting included).
-- **GitHub-identical rendering** — the official
+**GitHub-exact rendering**
+
+- The official
   [github-markdown-css](https://github.com/sindresorhus/github-markdown-css)
   plus GitHub's exact markup: alerts, task lists, footnotes, heading anchors,
-  `highlight.js` code, sanitized raw HTML.
+  highlight.js code, emoji shortcodes, frontmatter tables, sanitized raw HTML.
 - **Obsidian callouts** — the whole
   [callout vocabulary](https://obsidian.md/help/callouts) on top of GitHub's
   five alerts: 13 types with aliases, custom titles, foldable
   `> [!faq]- …` / `> [!tip]+ …`, and nesting.
-- **Math, Mermaid, emoji, frontmatter tables** — KaTeX (`$…$`, `$$…$$`,
-  ` ```math `) and Mermaid (` ```mermaid `) are vendored and load only when a
-  document uses them; diagrams get hover pan/zoom controls.
-- **Scroll sync** — the preview follows your cursor with a subtle marker on
-  the current block, and parks the URL hash on the heading you're editing;
-  `scroll_sync = 'both'` lets page scrolls move the cursor back.
+- **Wikilinks** — `[[page]]`, `[[page|alias]]`, `[[page#heading]]`, and
+  `![[image.png]]` embeds resolve Obsidian-style against the file's directory.
+- **KaTeX math** (`$…$`, `$$…$$`, ` ```math `, custom macros) and **Mermaid
+  diagrams** with hover pan/zoom controls — vendored, fetched only when a
+  document uses them.
+
+**Live editing**
+
+- Edits stream as you type — `:s`, undo, and LSP formatting included — and
+  land flicker-free: updates are DOM-diffed with morphdom, so images don't
+  reload, open `<details>` stay open, and typeset math, diagrams, and
+  highlighted code survive edits elsewhere untouched.
+- **Scroll sync** — the preview follows your cursor, marks the block you're
+  on, and parks the URL hash on the heading you're editing (a ready-made deep
+  link); `scroll_sync = 'both'` lets page scrolls move the cursor back.
 - **Clickable task lists** — tick a checkbox in the preview and the
   `- [ ]`/`- [x]` flips on that line in your buffer.
-- **Flicker-free updates** — DOM-diffed with morphdom, so images don't reload
-  and open `<details>` stay open.
-- **Live image reload** — regenerate a screenshot or diagram on disk and every
-  open preview refreshes just that image (`reload_images`).
-- **Multiple previews at once** — one shared server, an unguessable URL per
-  buffer.
-- **Relative links resolve like on GitHub** — a linked `.md` renders as a page
-  too (`?raw` for source).
-- **Wikilinks** — `[[page]]`, `[[page|alias]]`, `[[page#heading]]`, and
-  `![[image.png]]` embeds resolve Obsidian-style against the file's directory
-  (`wikilinks = false` renders them literally, like GitHub).
-- **Document outline** — a scroll-spied table of contents in the floating
-  menu; click to jump.
-- **Copy button** on every code block, GitHub-style.
-- **Instant first paint**, **auto light/dark** (toggleable in-page, along with
-  full width and follow), and a localhost-only server with strict CSP +
-  DOMPurify.
+- **Live image reload** — regenerate a screenshot or diagram on disk and
+  every open preview refreshes just that image.
+
+**Reading**
+
+- One floating button (drag it to any corner) opens the page menu: a
+  scroll-spied **document outline**, follow toggle, theme (auto/light/dark),
+  full width, go to top — all persisted per browser.
+- A copy button on every code block; video and audio that actually seek
+  (byte-range serving); instant first paint straight from the page shell.
+- Relative links resolve like on GitHub — a linked `.md` renders as a page
+  too (`?raw` for the source).
+
+**Plumbing**
+
+- Any number of previews at once on one shared, lazily-started server; each
+  buffer gets an unguessable URL; previews auto-close with their buffer and
+  the server auto-stops with the last preview.
+- Localhost-only, token-gated routes, strict CSP, DOMPurify on raw HTML.
 
 ## Requirements
 
@@ -87,7 +98,8 @@ vim.pack.add({ 'https://github.com/hitori-chan/mdpv.nvim' })
 `:preview` is not possible; `:Preview` is the closest the editor allows.)
 
 Lua API: `require('mdpv').open(bufnr?, {force?})`, `.close(bufnr?)`,
-`.toggle(bufnr?)`, `.stop()`, `.list()`, `.url(bufnr?)`.
+`.toggle(bufnr?)`, `.stop()`, `.list()`, `.url(bufnr?)`. Full reference:
+`:help mdpv`.
 
 ## Configuration
 
@@ -130,7 +142,8 @@ require('mdpv').setup({
 ## Development
 
 Tests, formatting, vendoring, and the design rationale live in
-[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) and
+[docs/DESIGN.md](docs/DESIGN.md).
 
 ## License
 
