@@ -35,7 +35,8 @@ styled with GitHub's actual CSS.
   highlighted code survive edits elsewhere untouched.
 - **Scroll sync** — the preview follows your cursor, marks the block you're
   on, and parks the URL hash on the heading you're editing (a ready-made deep
-  link); `scroll_sync = 'both'` lets page scrolls move the cursor back.
+  link). The reverse direction — page scrolls moving the cursor — is a switch
+  in the page menu; `scroll_sync = 'both'` turns it on by default.
 - **Clickable task lists** — tick a checkbox in the preview and the
   `- [ ]`/`- [x]` flips on that line in your buffer.
 - **Live image reload** — regenerate a screenshot or diagram on disk and
@@ -43,9 +44,13 @@ styled with GitHub's actual CSS.
 
 **Reading**
 
-- One floating button (drag it to any corner) opens the page menu: a
-  scroll-spied **document outline**, follow toggle, theme (auto/light/dark),
-  full width, go to top — all persisted per browser.
+- A **document outline** that stays out of your way — collapsed, it's a
+  slim rail of dashes (sized by heading level, the section you're reading
+  accented); hover it and it expands into the full scroll-spied list.
+  Click to jump, drag it to any corner.
+- One floating button (drag it to any corner too — the outline yields if they
+  meet) opens the page menu: sync toggles, outline, full width, theme
+  (auto/light/dark) — all persisted per browser.
 - A copy button on every code block; video and audio that actually seek
   (byte-range serving); instant first paint straight from the page shell.
 - Relative links resolve like on GitHub — a linked `.md` renders as a page
@@ -122,8 +127,9 @@ require('mdpv').setup({
   emoji = true,            -- :shortcode: expansion
   wikilinks = true,        -- [[page]] links + ![[image]] embeds, Obsidian style
   reload_images = true,    -- refresh images in open previews when they change on disk
-  scroll_sync = true,      -- preview follows the cursor (toggleable in-page);
-                           -- 'both': page scrolls also move the cursor
+  scroll_sync = true,      -- preview follows the cursor; both directions are
+                           -- in-page toggles — 'both' just defaults the
+                           -- "page scrolls move the cursor" one to on
 })
 ```
 

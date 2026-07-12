@@ -99,15 +99,18 @@ Calling setup() is optional. Defaults: >lua
 
 With `scroll_sync = true` (default) the page follows your cursor line,
 interpolating between blocks for smooth tracking. The block under the cursor
-carries a subtle accent bar in the left gutter, the outline (|mdpv-menu|)
+carries a subtle accent bar in the left gutter, the outline (|mdpv-outline|)
 highlights the enclosing heading, and when the cursor sits on a heading line
 the page's URL hash follows it — copy the address bar for a deep link.
 "Follow cursor" in the floating menu toggles all of this per browser
 (persisted in localStorage).
 
-With `scroll_sync = 'both'`, scrolling the page also moves the Neovim cursor
-to the line under the upper third of the viewport. Echo suppression on both
-ends prevents feedback loops. Off entirely with `scroll_sync = false`.
+The reverse direction — scrolling the page moves the Neovim cursor to the
+line under the upper third of the viewport — is the menu's "Move cursor on
+scroll" switch, off by default; `scroll_sync = 'both'` defaults it to on
+instead. The two switches are independent, and echo suppression on both ends
+prevents feedback loops. `scroll_sync = false` turns scroll sync off
+entirely, in both directions.
 
 ==============================================================================
 7. THE PREVIEW PAGE                                             *mdpv-page*
@@ -166,10 +169,21 @@ preview. Disable with `reload_images = false`.
 THE FLOATING MENU                                              *mdpv-menu*
 
 A floating button (bottom right by default; drag it to any corner) shows
-the connection state and opens the page menu: follow cursor, document
-outline (scroll-spied; click a heading to jump), theme (auto/light/dark),
-full width, go to top. Choices and the button's corner persist per browser
-in localStorage.
+the connection state and opens the page menu. Sync (live previews only):
+follow cursor, move cursor on scroll. View: outline, full width, theme
+(auto/light/dark). Plus go to top. Every choice and the button's corner
+persist per browser in localStorage.
+
+THE OUTLINE                                                 *mdpv-outline*
+
+The document outline floats over the page collapsed into a slim rail of
+dashes — one per heading, longer for higher levels, with the section you
+are reading accented (scroll-spied). Hovering the rail expands it in place
+into the full heading list, where levels read by weight and shade (h1
+heaviest) and indentation. Clicking an entry jumps to it, and moving the
+pointer away collapses the list back to the rail. On by default; switch it off (and back on) from the menu, per
+browser. Drag it to park it in any corner; when it meets the menu button
+in a corner, it steps aside so the two never overlap.
 
 SECURITY                                                   *mdpv-security*
 

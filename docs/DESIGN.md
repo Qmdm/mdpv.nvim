@@ -56,8 +56,8 @@ lua/mdpv/files.lua     file responses: async reads, chunked streaming, ranges, 3
 lua/mdpv/watch.lua     served-file watchers behind live image reload (per token)
 assets/index.html      page shell (template: {{TITLE}} {{BOOT}} {{CSS_LINKS}} …)
 assets/app.js          browser renderer (markdown-it → DOMPurify → GitHub markup)
-assets/mdpv.css        page chrome (floating menu, container, non-GitHub
-                       callout kinds) in Primer tokens
+assets/mdpv.css        page chrome (floating menu, outline rail, container,
+                       non-GitHub callout kinds) in Primer tokens
 assets/vendor/         pinned deps (scripts/vendor.sh re-downloads them)
 tests/                 e2e.lua · fidelity.lua · sync.lua · interact.lua (+ cdp.js)
 ```
@@ -73,7 +73,7 @@ only non-authored files.
 | `GET /p/<token>` | page shell with the buffer content embedded (instant first paint) |
 | `GET /events/<token>` | SSE stream: `update` events (JSON `{token,title,md,features}`), `scroll` events (cursor line), `assets` events (served files changed on disk), `close` event, 30 s heartbeat comments |
 | `GET /f/<token>/<path>` | files resolved against the buffer's directory, streamed with byte ranges + `Last-Modified`/304 revalidation; `.md` files render as static pages (`?raw` for bytes) |
-| `POST /sync/<token>` | browser → editor: JSON `{line}` moves the cursor (`scroll_sync = 'both'`); JSON `{toggle: {line, checked}}` flips a task checkbox |
+| `POST /sync/<token>` | browser → editor: JSON `{line}` moves the cursor (sent while the page's move-cursor-on-scroll switch is on); JSON `{toggle: {line, checked}}` flips a task checkbox |
 | `GET /assets/<path>` | plugin frontend, `Cache-Control: immutable` + per-session `?v=` buster |
 
 ### Data flow
@@ -102,7 +102,7 @@ browser's `EventSource` reconnects automatically with `retry:` for free, which
 covers the "stale connection after suspend" pain point in prior art. Even
 scroll sync — the usual argument for WebSocket — is editor → browser, so it
 rides the same SSE stream as a `scroll` event. The reverse direction
-(page-scroll moving the cursor, `scroll_sync = 'both'`) is a rare, tiny
+(page-scroll moving the cursor, an in-page switch) is a rare, tiny
 message, which a plain `POST /sync/<token>` carries in ~20 lines — far
 cheaper than upgrading the whole transport to RFC 6455.
 
@@ -201,26 +201,58 @@ diff strips it), the outline highlights the enclosing heading, and a cursor
 parked on a heading line mirrors its slug into the URL hash via
 `replaceState` (deep-linkable, no scroll, no history spam). The follow
 toggle turns all of it off per browser (persisted in localStorage);
-`scroll_sync = false` removes the toggle entirely.
+`scroll_sync = false` removes the menu's Sync group entirely.
 
 **One floating button instead of page chrome.** The page itself stays
 chrome-free, like a rendered file on GitHub; everything interactive lives
 behind a Next.js-devtools-style round button that can be dragged to any
-corner. Its menu carries the connection dot, the follow toggle, a
-collapsible document outline (rebuilt per render from the slugged headings,
-scroll-spied via the same binary search as scroll sync, and suppressed while
-a programmatic glide is in flight so a clicked item stays lit — targets near
-the page bottom can never reach the spy anchor), plus per-browser theme,
-full-width, and go-to-top controls.
+corner. Its menu carries the connection dot and two labeled groups: Sync
+(follow cursor, move cursor on scroll) and View (outline, full width, and a
+segmented auto/light/dark theme picker), plus go-to-top — every choice
+persisted per browser in localStorage.
 
-**Bidirectional sync (`scroll_sync = 'both'`) without feedback loops.** User
-scrolls (debounced 150 ms) invert the line mapping at the viewport anchor and
+**The outline is a rail that expands on hover** (the pattern Notion's
+floating outline established). The document outline (rebuilt per render from
+the slugged headings, scroll-spied via the same binary search as scroll
+sync, and suppressed while a programmatic glide is in flight so a clicked
+item stays lit — targets near the page bottom can never reach the spy
+anchor) is something you keep open while reading, so burying it inside a
+transient dropdown fought its purpose — and every always-visible rendering
+of the full list (opaque panel, frosted veil, see-through scrim) traded that
+for covering or colliding with the document underneath. Collapsed, each
+heading is a small dash — longer for higher levels, hugging whichever screen
+edge it's parked against, the current section accented — a rail that covers
+next to nothing and can't be mistaken for page text. Hovering it expands it
+in place into a card with the full list (a 120 ms intent delay keeps a
+passing pointer from popping it; `:focus-within` expands it for keyboard
+users; labels slide in with an eased reveal, dropped under
+`prefers-reduced-motion`), and it collapses back the moment the pointer
+leaves. Expanded, heading levels read as typographic tiers (h1 heaviest,
+fading toward muted) over a 12px indent per level — guide hairlines were
+tried and dropped as noise — and scroll shadows (local-attachment
+background layers) mark a clipped edge as scrollable.
+Both states are one element — only its dress changes, so the card surface
+fades over the rail. On by default and toggled from the menu (persisted
+per browser), corner-parked by the same drag-and-snap code as the button,
+and the rail itself is the drag handle; the drag listens for moves on `window` with no pointer capture,
+because capturing would retarget the tail click away from the anchor under
+it and break click-to-jump (a handle-scoped listener would also lose fast
+drags that leave the thin rows between two pointer events). When rail and
+button rest in the same corner the rail yields — it anchors past the button
+(`.mdpv-evade`) instead of on top of it, gliding out of the way when the
+button moves in.
+
+**Bidirectional sync without feedback loops.** User scrolls (debounced
+150 ms) invert the line mapping at the viewport anchor and
 `POST /sync/<token>`; Neovim clamps the line and moves the cursor in the
 first window showing the buffer. Two guards kill the echo: the page ignores
 scroll events for 1.2 s after its own programmatic smooth-scroll, and the
 editor records a browser-applied line as "already broadcast" so the resulting
-`CursorMoved` stays silent. Opt-in rather than default because a page scroll
-yanking the cursor mid-edit is a taste decision.
+`CursorMoved` stays silent. A page scroll yanking the cursor mid-edit is a
+taste decision, so the direction is a per-browser switch in the menu ("Move
+cursor on scroll"), off unless `scroll_sync = 'both'` makes it the default;
+the editor-side handler is registered either way, so flipping the switch
+needs no restart.
 
 **DOM diffing with morphdom.** Each update post-processes a detached copy of
 the article, then morphs it into the live DOM instead of `innerHTML`-swapping.
@@ -316,25 +348,25 @@ here to bound traversal against.
 
 ## 6. Testing
 
-- `tests/e2e.lua` (85 checks): real Neovim + curl against the live server —
+- `tests/e2e.lua` (87 checks): real Neovim + curl against the live server —
   routes, headers, CSP, `..` traversal rejection on both `/assets/` and `/f/`,
   byte ranges (206/416, suffix + open-ended + multi-range degradation),
   `If-Modified-Since` → 304, HEAD, SSE initial + live-edit push,
-  scroll events, `POST /sync` cursor moves (incl. clamping and bad payloads),
-  checkbox-toggle round trip (incl. non-task lines left alone), the `assets`
-  event when a served image changes on disk, KaTeX macros in the feature
-  flags, static `.md` pages + `?raw`, multi-preview isolation, re-open reuse,
-  filetype guard, auto-close on wipeout, auto-stop, restart, `:Preview`
-  command surface.
-- `tests/fidelity.lua` (59 checks): headless Chromium `--dump-dom` of a live
+  scroll events, `POST /sync` cursor moves (incl. clamping, bad payloads,
+  and acceptance under plain `scroll_sync = true`), checkbox-toggle round
+  trip (incl. non-task lines left alone), the `assets` event when a served
+  image changes on disk, KaTeX macros in the feature flags, static `.md`
+  pages + `?raw`, multi-preview isolation, re-open reuse, filetype guard,
+  auto-close on wipeout, auto-stop, restart, `:Preview` command surface.
+- `tests/fidelity.lua` (65 checks): headless Chromium `--dump-dom` of a live
   preview asserting GitHub markup (alert divs + octicons, Obsidian callouts —
   extra types, aliases, custom titles, `<details>` folding, nesting —
   task-list classes with enabled checkboxes, wikilink resolution (pages,
   aliases, headings, image embeds), slug dedup, footnote shape, hljs spans
-  (lazy-loaded), copy buttons, outline items, KaTeX inline/display
-  typesetting, Mermaid SVG + pan/zoom controls, emoji expansion, frontmatter
-  table incl. nested maps, source-line mapping, morphdom keys, sanitization,
-  `/f/` URL rewriting).
+  (lazy-loaded), copy buttons, outline items + default visibility, sync and
+  theme menu controls, KaTeX inline/display typesetting, Mermaid SVG +
+  pan/zoom controls, emoji expansion, frontmatter table incl. nested maps,
+  source-line mapping, morphdom keys, sanitization, `/f/` URL rewriting).
 - `tests/sync.lua` (7 checks): drives headless Chromium over the DevTools
   protocol (tests/cdp.js, dependency-free — Node's built-in WebSocket) to
   prove scroll sync in both directions against a real page: a cursor move
