@@ -76,8 +76,20 @@ check('page rendered under CDP', watch.saw('LOADED'))
 -- Move the cursor near the end of the document; the page should follow.
 vim.api.nvim_win_set_cursor(0, { vim.api.nvim_buf_line_count(buf) - 2, 0 })
 vim.cmd('doautocmd CursorMoved')
+check('cursor move scrolled the page', watch.saw('SCROLLED'))
+check('cursor block marked in the page', watch.saw('MARKED'))
+-- Park the cursor on a heading line: the page's URL hash should follow.
+local heading_line
+for i, l in ipairs(vim.api.nvim_buf_get_lines(buf, 0, -1, false)) do
+  if l == '### Footnotes' then
+    heading_line = i
+    break
+  end
+end
+vim.api.nvim_win_set_cursor(0, { assert(heading_line, 'fixture lost its Footnotes heading'), 0 })
+vim.cmd('doautocmd CursorMoved')
 local res, out = watch.finish()
-check('cursor move scrolled the page', res and res.code == 0, out)
+check('cursor on a heading updated the page hash', res and res.code == 0, out)
 
 -- --- browser -> editor -------------------------------------------------------
 

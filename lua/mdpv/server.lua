@@ -29,10 +29,11 @@ local state = {
   -- speed; a per-session version keeps plugin updates from being masked by
   -- stale browser caches (a recurring bug class in similar plugins).
   buster = '0',
-  -- Renderer feature flags (math/mermaid/emoji) shipped to static .md pages,
-  -- which have no preview payload to carry them.
-  features = { math = true, mermaid = true, emoji = true },
+  -- Renderer feature flags shipped to static .md pages, which have no
+  -- preview payload to carry them.
+  features = { math = true, mermaid = true, emoji = true, wikilinks = true },
   template = nil, ---@type string? assets/index.html, read once per server run
+  reload_images = true, -- watch served files and push `assets` events on change
 }
 
 local plugin_root = vim.fn.fnamemodify(debug.getinfo(1, 'S').source:sub(2), ':h:h:h')
@@ -190,17 +191,18 @@ local function parse_range(spec, size)
     return nil
   end
   if a == '' then
-    local n = tonumber(b) -- suffix form: the last n bytes
+    local n = tonumber(b) or 0 -- suffix form: the last n bytes
     if n == 0 then
       return 'unsatisfiable'
     end
     return math.max(0, size - n), size - 1
   end
-  local first = tonumber(a)
+  local first = tonumber(a) or 0
   if first >= size then
     return 'unsatisfiable'
   end
-  local last = b ~= '' and math.min(tonumber(b), size - 1) or size - 1
+  local bn = tonumber(b)
+  local last = bn and math.min(bn, size - 1) or size - 1
   if last < first then
     return nil
   end
@@ -370,6 +372,94 @@ local function is_confined(rel)
 end
 
 ------------------------------------------------------------------------------
+-- Served-file watchers (live image reload)
+------------------------------------------------------------------------------
+
+-- Files served through /f/ get a directory-level fs watch (deduped per dir,
+-- capped, torn down with the preview). When a watched file changes — or is
+-- rename-replaced, which a file-level watch would lose — an `assets` SSE
+-- event pushes the relative paths and the page cache-busts the matching
+-- <img>/<video>/<audio> elements.
+
+local MAX_WATCH_DIRS = 32
+
+local function notify_asset(pv, rel)
+  pv.changed_assets = pv.changed_assets or {}
+  pv.changed_assets[rel] = true
+  if not pv.asset_timer then
+    pv.asset_timer = uv.new_timer()
+    if not pv.asset_timer then
+      return
+    end
+  end
+  -- Debounced: tools rewriting a file emit bursts of events.
+  pv.asset_timer:stop()
+  pv.asset_timer:start(
+    150,
+    0,
+    vim.schedule_wrap(function()
+      local paths = {}
+      for r in pairs(pv.changed_assets or {}) do
+        paths[#paths + 1] = r
+      end
+      pv.changed_assets = {}
+      if #paths > 0 and state.previews[pv.token] then
+        table.sort(paths)
+        M.broadcast(pv.token, 'assets', vim.json.encode({ paths = paths }))
+      end
+    end)
+  )
+end
+
+local function watch_file(pv, fpath, rel)
+  if not state.reload_images then
+    return
+  end
+  local dir, name = fpath:match('^(.*)/([^/]+)$')
+  if not dir or dir == '' then
+    return
+  end
+  pv.watches = pv.watches or {}
+  local w = pv.watches[dir]
+  if not w then
+    if vim.tbl_count(pv.watches) >= MAX_WATCH_DIRS then
+      return
+    end
+    local handle = uv.new_fs_event()
+    if not handle then
+      return
+    end
+    w = { handle = handle, files = {} }
+    local ok, r = pcall(handle.start, handle, dir, {}, function(werr, filename)
+      if not werr and filename and w.files[filename] then
+        notify_asset(pv, w.files[filename])
+      end
+    end)
+    if not ok or (r ~= 0 and r ~= true) then
+      pcall(handle.close, handle)
+      return
+    end
+    pv.watches[dir] = w
+  end
+  w.files[name] = rel
+end
+
+local function drop_watches(pv)
+  if pv.asset_timer then
+    pv.asset_timer:stop()
+    pv.asset_timer:close()
+    pv.asset_timer = nil
+  end
+  for _, w in pairs(pv.watches or {}) do
+    pcall(w.handle.stop, w.handle)
+    if not w.handle:is_closing() then
+      w.handle:close()
+    end
+  end
+  pv.watches = nil
+end
+
+------------------------------------------------------------------------------
 -- Routes
 ------------------------------------------------------------------------------
 
@@ -515,22 +605,27 @@ local function route_events(sock, token)
   return true -- keep the socket open (SSE)
 end
 
---- Browser -> editor half of bidirectional scroll sync: the page POSTs the
---- source line under its viewport anchor; the preview's on_sync callback
---- moves the cursor. Fire-and-forget: always 204, bad payloads are ignored.
+--- Browser -> editor messages, POSTed to /sync/<token>. Two shapes:
+---   { line = N }                          scroll sync 'both': move the cursor
+---   { toggle = { line = N, checked = b }} task checkbox clicked: flip [ ]/[x]
+--- Fire-and-forget: always 204, bad payloads are ignored.
 local function route_sync(sock, token, body)
   local pv = state.previews[token]
   if not pv then
     return respond(sock, 404)
   end
-  if pv.on_sync then
-    vim.schedule(function()
-      local ok, msg = pcall(vim.json.decode, body or '')
-      if ok and type(msg) == 'table' and type(msg.line) == 'number' and state.previews[token] and pv.on_sync then
-        pv.on_sync(math.floor(msg.line))
-      end
-    end)
-  end
+  vim.schedule(function()
+    local ok, msg = pcall(vim.json.decode, body or '')
+    if not (ok and type(msg) == 'table' and state.previews[token]) then
+      return
+    end
+    local toggle = msg.toggle
+    if type(toggle) == 'table' and type(toggle.line) == 'number' and pv.on_toggle then
+      pv.on_toggle(math.floor(toggle.line), toggle.checked == true)
+    elseif type(msg.line) == 'number' and pv.on_sync then
+      pv.on_sync(math.floor(msg.line))
+    end
+  end)
   respond(sock, 204)
 end
 
@@ -621,6 +716,7 @@ local function handle_request(sock, head, body)
     if (low:match('%.md$') or low:match('%.markdown$')) and not has_param(query, 'raw') then
       return route_static_md(sock, ftoken, frel, fpath)
     end
+    watch_file(pv, fpath, frel)
     return serve_file(sock, fpath, nil, req)
   end
 
@@ -700,7 +796,7 @@ function M.is_running()
   return state.tcp ~= nil
 end
 
----@param config { host: string, port: integer, theme: string, math?: boolean, mermaid?: boolean, emoji?: boolean }
+---@param config { host: string, port: integer, theme: string, math?: boolean|table, mermaid?: boolean, emoji?: boolean, wikilinks?: boolean, reload_images?: boolean }
 ---@return boolean ok, string? err
 function M.start(config)
   if state.tcp then
@@ -708,10 +804,12 @@ function M.start(config)
   end
   state.theme = config.theme
   state.features = {
-    math = config.math ~= false,
+    math = config.math == false and false or (type(config.math) == 'table' and config.math or true),
     mermaid = config.mermaid ~= false,
     emoji = config.emoji ~= false,
+    wikilinks = config.wikilinks ~= false,
   }
+  state.reload_images = config.reload_images ~= false
   local tcp = uv.new_tcp()
   if not tcp then
     return false, 'could not create TCP handle'
@@ -772,6 +870,7 @@ function M.close_preview(token, notify)
     return
   end
   state.previews[token] = nil
+  drop_watches(pv)
   for sock in pairs(pv.clients) do
     if notify and not sock:is_closing() then
       local ok = pcall(sock.write, sock, sse_frame('close', '{}'), function()

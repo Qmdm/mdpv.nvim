@@ -68,9 +68,9 @@ only non-authored files.
 | --- | --- |
 | `GET /` | index of active previews |
 | `GET /p/<token>` | page shell with the buffer content embedded (instant first paint) |
-| `GET /events/<token>` | SSE stream: `update` events (JSON `{token,title,md,features}`), `scroll` events (cursor line), `close` event, 30 s heartbeat comments |
-| `GET /f/<token>/<path>` | files resolved against the buffer's directory; `.md` files render as static pages (`?raw` for bytes) |
-| `POST /sync/<token>` | browser → editor scroll sync: JSON `{line}` moves the cursor (`scroll_sync = 'both'`) |
+| `GET /events/<token>` | SSE stream: `update` events (JSON `{token,title,md,features}`), `scroll` events (cursor line), `assets` events (served files changed on disk), `close` event, 30 s heartbeat comments |
+| `GET /f/<token>/<path>` | files resolved against the buffer's directory, streamed with byte ranges + `Last-Modified`/304 revalidation; `.md` files render as static pages (`?raw` for bytes) |
+| `POST /sync/<token>` | browser → editor: JSON `{line}` moves the cursor (`scroll_sync = 'both'`); JSON `{toggle: {line, checked}}` flips a task checkbox |
 | `GET /assets/<path>` | plugin frontend, `Cache-Control: immutable` + per-session `?v=` buster |
 
 ### Data flow
@@ -131,16 +131,30 @@ during research):
   Unprefixed ids (GitHub uses `user-content-` + JS indirection) so plain
   `#fragment` links work in a static page.
 - *Task lists*: markdown-it-task-lists already emits GitHub's classes
-  (`contains-task-list`, `task-list-item`, `task-list-item-checkbox`).
+  (`contains-task-list`, `task-list-item`, `task-list-item-checkbox`). Live
+  previews render the checkboxes *enabled*: a click POSTs `{toggle: {line,
+  checked}}` to `/sync/<token>` and the editor flips `[ ]`/`[x]` on that
+  source line (only if it still parses as a task item, and only in modifiable
+  buffers) — the debounced re-render then confirms the state. Static `.md`
+  pages keep them disabled, exactly like GitHub.
 - *Footnotes*: markdown-it-footnote output is reshaped — `data-footnotes` on
   the section, an `sr-only` "Footnotes" `h2` (GitHub's markup; the CSS assumes
   the host provides `.sr-only`, so mdpv.css does), bare superscript numbers
   (the CSS draws GitHub's `[1]` brackets via `[data-footnote-ref]::before/
   ::after`), `data-footnote-backref` ↩ links.
 - *Code*: highlight.js with its github/github-dark themes (media-query-merged
-  for auto mode by `scripts/vendor.sh`).
+  for auto mode by `scripts/vendor.sh`), lazy-loaded on the first fenced block
+  with a language and re-applied only to blocks whose text or language
+  changed. Each block gets a GitHub-style hover copy button; the wrapper is
+  added on the detached copy before the diff so it survives morphdom.
 - *Emoji*: markdown-it-emoji expands `:shortcodes:` to native unicode — the
   same glyphs GitHub's `<g-emoji>` wrapper displays on modern platforms.
+- *Wikilinks*: an inline rule renders `[[page]]` / `[[page|alias]]` /
+  `[[page#heading]]` / `![[img.png]]` Obsidian-style — extension-less targets
+  get `.md` appended and resolve through the `/f/` route like any relative
+  link; heading fragments reuse the anchor slugger; non-image embeds degrade
+  to plain links (no transclusion). GitHub renders `[[…]]` literally outside
+  wikis, so `wikilinks = false` restores that.
 - *Frontmatter*: rendered as a table (keys as the header row), matching
   GitHub's file view. Only flat `key: value` pairs and scalar lists are
   parsed; anything hairier degrades to stripping the block — never to
@@ -160,7 +174,13 @@ A render-generation counter discards typesetting results that finish after a
 newer edit. KaTeX over MathJax (GitHub's engine): an order of magnitude
 smaller and synchronous, with visually near-identical output; Mermaid runs
 with `securityLevel: 'strict'`. Invalid TeX renders red in place; an invalid
-diagram keeps its source block, like any unknown fence.
+diagram keeps its source block, like any unknown fence. `math` also accepts a
+table of KaTeX options (`{ macros = … }`), shipped to the page in the feature
+flags and copied per block so `\gdef` can't make rendering order-dependent.
+Rendered diagrams get
+hover pan/zoom controls (± / reset, drag to pan while zoomed, double-click to
+reset) — a CSS transform on the svg, so the typeset node morphdom preserves
+keeps its view across edits elsewhere.
 
 **Scroll sync over the existing SSE stream.** Every block element carries
 `data-source-line` (markdown-it `token.map`, offset by the stripped
@@ -168,11 +188,19 @@ frontmatter). `CursorMoved` autocmds debounce 80 ms and broadcast the cursor
 line; the page scrolls to the nearest mapped element, interpolating between
 neighbours so long paragraphs track smoothly, aimed at the upper third of the
 viewport. It follows the *cursor*, not the topline — the cursor is where the
-user is working. The floating menu toggles it (persisted in localStorage);
+user is working. The block under the cursor gets a gutter marker
+(`.mdpv-cursor`, re-applied per render since the diff strips it), the outline
+highlights the enclosing heading, and a cursor parked on a heading line
+mirrors its slug into the URL hash via `replaceState` (deep-linkable, no
+scroll, no history spam). The floating menu toggles it (persisted in
+localStorage);
 `scroll_sync = false` removes the toggle entirely. The same menu carries the
-connection dot plus per-browser theme, full-width, and go-to-top controls,
-behind a Next.js-devtools-style round button that can be dragged to any
-corner — the page itself stays chrome-free, like a rendered file on GitHub.
+connection dot, a collapsible document outline (built per render from the
+slugged headings, scroll-spied via the same binary search, suppressed while a
+programmatic glide is in flight so the clicked item stays lit), plus
+per-browser theme, full-width, and go-to-top controls, behind a
+Next.js-devtools-style round button that can be dragged to any corner — the
+page itself stays chrome-free, like a rendered file on GitHub.
 
 **Bidirectional sync (`scroll_sync = 'both'`) without feedback loops.** User
 scrolls (debounced 150 ms) invert the line mapping at the viewport anchor and
@@ -193,6 +221,15 @@ not re-rendering them per keystroke matters). Math/mermaid fences are
 normalized to their placeholder `<div>`s *before* the diff so placeholder and
 typeset result share a tag and can be paired. Falls back to a full swap if
 morphdom is unavailable.
+
+**Live image reload via directory watches.** Every file served through
+`/f/<token>/` registers a `uv_fs_event` watch on its *directory* (deduped,
+capped at 32 dirs per preview, torn down with it) — a file-level watch would
+go stale when tools rename-replace on save. Changes debounce 150 ms into one
+`assets` SSE event listing the relative paths; the page cache-busts the
+matching `<img>`/`<video>`/`<audio>` elements in place. Combined with
+Last-Modified revalidation, the next full render (which restores the bare
+URL) stays fresh too. `reload_images = false` turns the watches off.
 
 **Relative `.md` links render as pages.** A markdown file fetched through
 `/f/<token>/…` gets the same page shell and renderer as a live preview, with
@@ -241,12 +278,25 @@ here to bound traversal against.
 ## 5. Performance notes
 
 - Server work per edit burst: one timer re-arm per `on_lines` (no allocation),
-  then a single lines-join + JSON encode after 150 ms of quiet.
-- No markdown parsing in Neovim, ever.
+  then a single lines-join + JSON encode after 150 ms of quiet — and only if
+  an SSE client is actually attached; unwatched previews cost nothing per
+  edit (a client connecting later gets a fresh push from the events route).
+- No markdown parsing in Neovim, ever. The page shell template is read from
+  disk once per server run.
+- Served files stream in 256 KiB chunks with write-callback backpressure (no
+  whole-file buffering); single-range `Range` requests answer 206 (which is
+  what lets `<video>`/`<audio>` seek) and `If-Modified-Since` revalidation
+  turns reloads of unchanged files into 304s.
 - Browser re-render parses + diffs (morphdom) in ~5–20 ms on README-sized
   documents; only changed DOM subtrees are touched. Content-unchanged pushes
-  are skipped by string compare; typeset math/diagrams are keyed by source and
-  skipped when unchanged.
+  are skipped by string compare; typeset math/diagrams are keyed by source,
+  and highlighted code blocks by text + language, so edits elsewhere skip
+  them.
+- highlight.js lazy-loads like KaTeX/Mermaid — a prose-only document fetches
+  none of them.
+- Scroll sync caches the source-line anchor elements per render and
+  binary-searches them (both directions, plus the outline spy), instead of
+  walking and measuring every mapped block per event.
 - Static assets: `immutable` + per-session `?v=` — one fetch per session,
   correct across plugin updates.
 - SSE heartbeat every 30 s doubles as dead-socket collection; closed tabs
@@ -254,24 +304,33 @@ here to bound traversal against.
 
 ## 6. Testing
 
-- `tests/e2e.lua` (62 checks): real Neovim + curl against the live server —
+- `tests/e2e.lua` (85 checks): real Neovim + curl against the live server —
   routes, headers, CSP, `..` traversal rejection on both `/assets/` and `/f/`,
-  SSE initial + live-edit push,
+  byte ranges (206/416, suffix + open-ended + multi-range degradation),
+  `If-Modified-Since` → 304, HEAD, SSE initial + live-edit push,
   scroll events, `POST /sync` cursor moves (incl. clamping and bad payloads),
-  static `.md` pages + `?raw`, multi-preview isolation, re-open reuse,
+  checkbox-toggle round trip (incl. non-task lines left alone), the `assets`
+  event when a served image changes on disk, KaTeX macros in the feature
+  flags, static `.md` pages + `?raw`, multi-preview isolation, re-open reuse,
   filetype guard, auto-close on wipeout, auto-stop, restart, `:Preview`
   command surface.
-- `tests/fidelity.lua` (50 checks): headless Chromium `--dump-dom` of a live
+- `tests/fidelity.lua` (59 checks): headless Chromium `--dump-dom` of a live
   preview asserting GitHub markup (alert divs + octicons, Obsidian callouts —
   extra types, aliases, custom titles, `<details>` folding, nesting —
-  task-list classes, slug dedup, footnote shape, hljs spans, KaTeX
-  inline/display typesetting, Mermaid SVG, emoji expansion, frontmatter table
-  incl. nested maps, source-line mapping, morphdom keys, sanitization, `/f/`
-  URL rewriting).
-- `tests/sync.lua` (5 checks): drives headless Chromium over the DevTools
+  task-list classes with enabled checkboxes, wikilink resolution (pages,
+  aliases, headings, image embeds), slug dedup, footnote shape, hljs spans
+  (lazy-loaded), copy buttons, outline items, KaTeX inline/display
+  typesetting, Mermaid SVG + pan/zoom controls, emoji expansion, frontmatter
+  table incl. nested maps, source-line mapping, morphdom keys, sanitization,
+  `/f/` URL rewriting).
+- `tests/sync.lua` (7 checks): drives headless Chromium over the DevTools
   protocol (tests/cdp.js, dependency-free — Node's built-in WebSocket) to
   prove scroll sync in both directions against a real page: a cursor move
-  scrolls the browser, and a synthetic user scroll moves the cursor.
+  scrolls the browser (and marks the cursor block; a heading line updates the
+  URL hash), and a synthetic user scroll moves the cursor.
+- `tests/interact.lua` (5 checks): a real, trusted click on a task checkbox
+  through CDP — POST to the editor, buffer line flips, and the re-render
+  confirms the checked state back in the page.
 - All run headless: `nvim --clean --headless -l tests/<file>.lua`.
 
 ## 7. Future work

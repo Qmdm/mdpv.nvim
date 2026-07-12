@@ -234,6 +234,75 @@ body {
   color: var(--mdpv-fg-muted);
 }
 
+/* Document outline: collapsible heading list inside the menu, indented by
+ * level; .active marks the heading under the viewport anchor (scroll spy). */
+#outline-list {
+  min-width: 200px;
+  max-width: 300px;
+  max-height: 40vh;
+  margin-top: 4px;
+  padding-top: 4px;
+  overflow-y: auto;
+  border-top: 1px solid var(--mdpv-border);
+}
+
+#outline-list a {
+  display: block;
+  overflow: hidden;
+  padding: 3px 10px;
+  font-size: 12px;
+  color: var(--mdpv-fg-muted);
+  white-space: nowrap;
+  text-decoration: none;
+  text-overflow: ellipsis;
+  border-radius: 6px;
+}
+
+#outline-list a:hover {
+  color: var(--mdpv-fg);
+  background-color: var(--mdpv-bg-subtle);
+}
+
+#outline-list a.active {
+  color: var(--mdpv-accent-fg);
+}
+
+#outline-list .outline-h2 {
+  padding-left: 22px;
+}
+
+#outline-list .outline-h3 {
+  padding-left: 34px;
+}
+
+#outline-list .outline-h4 {
+  padding-left: 46px;
+}
+
+#outline-list .outline-h5 {
+  padding-left: 58px;
+}
+
+#outline-list .outline-h6 {
+  padding-left: 70px;
+}
+
+/* Caret on the outline row: points right collapsed, down expanded. */
+.fab-caret {
+  width: 0;
+  height: 0;
+  border-top: 5px solid currentColor;
+  border-right: 4px solid transparent;
+  border-left: 4px solid transparent;
+  opacity: 0.6;
+  transition: transform 0.15s;
+  transform: rotate(-90deg);
+}
+
+[aria-expanded='true'] .fab-caret {
+  transform: none;
+}
+
 /* Mini switch shown on toggle rows; aria-pressed drives the state. */
 .fab-switch {
   position: relative;
@@ -321,6 +390,70 @@ body.mdpv-wide main {
 .markdown-body pre code.hljs {
   padding: 0;
   background: transparent;
+}
+
+/* The block the editor cursor is on (follow mode): an accent bar in the
+ * left gutter, no layout shift. */
+.markdown-body .mdpv-cursor {
+  position: relative;
+}
+
+.markdown-body .mdpv-cursor::before {
+  content: '';
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  left: -16px;
+  width: 3px;
+  background-color: var(--mdpv-accent-border);
+  border-radius: 3px;
+  opacity: 0.7;
+}
+
+/* Hover copy button on code blocks, GitHub-style. The wrapper anchors the
+ * button to the block instead of the (horizontally scrolling) <pre>, and
+ * takes over the pre's bottom margin so *:last-child rules keep working. */
+.markdown-body .mdpv-pre {
+  position: relative;
+  margin-bottom: 16px;
+}
+
+.markdown-body .mdpv-pre > pre {
+  margin-bottom: 0;
+}
+
+.markdown-body .mdpv-pre > .mdpv-copy {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  color: var(--mdpv-fg-muted);
+  background-color: var(--mdpv-bg-subtle);
+  border: 1px solid var(--mdpv-border);
+  border-radius: 6px;
+  opacity: 0;
+  transition: opacity 0.1s;
+  cursor: pointer;
+}
+
+.markdown-body .mdpv-pre:hover > .mdpv-copy,
+.markdown-body .mdpv-pre > .mdpv-copy:focus-visible {
+  opacity: 1;
+}
+
+.markdown-body .mdpv-copy:hover {
+  color: var(--mdpv-fg);
+}
+
+.markdown-body .mdpv-copy.mdpv-copied {
+  color: var(--mdpv-success);
+  border-color: var(--mdpv-success-border);
+  opacity: 1;
 }
 
 /* Obsidian callout types beyond GitHub's five alerts, drawn in the same
@@ -428,10 +561,54 @@ body.mdpv-wide main {
 
 /* Mermaid diagrams: centered block, like GitHub's iframe rendering. */
 .markdown-body .mdpv-mermaid {
+  position: relative; /* anchors the pan/zoom controls */
   display: flex;
   justify-content: center;
   margin-bottom: 16px;
   overflow-x: auto;
+}
+
+/* Pan/zoom: hover controls; while zoomed the container clips and the
+ * diagram drags. */
+.markdown-body .mdpv-mermaid.mdpv-zoomed {
+  overflow: hidden;
+}
+
+.markdown-body .mdpv-mermaid.mdpv-zoomed svg {
+  cursor: grab;
+}
+
+.mdpv-diagram-controls {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+
+.markdown-body .mdpv-mermaid:hover .mdpv-diagram-controls,
+.markdown-body .mdpv-mermaid.mdpv-zoomed .mdpv-diagram-controls {
+  opacity: 1;
+}
+
+.mdpv-diagram-controls button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  color: var(--mdpv-fg-muted);
+  background-color: var(--mdpv-bg-subtle);
+  border: 1px solid var(--mdpv-border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.mdpv-diagram-controls button:hover {
+  color: var(--mdpv-fg);
 }
 
 /* Diagram source shown as-is: not yet typeset, or failed to parse. */

@@ -101,10 +101,23 @@ check(
 )
 check('unknown type stays a blockquote', content:find('<blockquote[^>]*>%s*<p[^>]*>%[!unknown%]') ~= nil)
 
--- Task lists (GitHub classes come from markdown-it-task-lists)
+-- Task lists (GitHub classes come from markdown-it-task-lists). Live previews
+-- render the checkboxes enabled — clicking one toggles the buffer line.
 check('task list ul class', content:find('contains-task-list', 1, true) ~= nil)
 check('task list item class', content:find('task-list-item', 1, true) ~= nil)
-check('checked disabled checkbox', content:find('checked.-disabled') ~= nil or content:find('disabled.-checked') ~= nil)
+local checkbox = content:match('<input[^>]*task%-list%-item%-checkbox[^>]*>')
+check('live checkbox is enabled (clickable)', checkbox ~= nil and checkbox:find('disabled') == nil)
+check('checked state rendered', content:find('<input[^>]*checked[^>]*>') ~= nil)
+
+-- Wikilinks (Obsidian style, resolved through the /f/ file route)
+check('wikilink resolves to page.md', content:find('<a href="/f/' .. token .. '/second.md">second</a>', 1, true) ~= nil)
+check('wikilink alias text', content:find('<a href="/f/' .. token .. '/second.md">the second page</a>', 1, true) ~= nil)
+check('same-page heading wikilink', content:find('<a href="#wikilinks">#wikilinks</a>', 1, true) ~= nil)
+check(
+  'cross-page heading wikilink',
+  content:find('<a href="/f/' .. token .. '/second.md#top">jump</a>', 1, true) ~= nil
+)
+check('image embed wikilink', content:find('<img src="/f/' .. token .. '/img.png" alt="img.png"', 1, true) ~= nil)
 
 -- Heading anchors + GitHub slugs (incl. dedup)
 check('heading id slug', content:find('id="sample%-document"') ~= nil)
@@ -125,6 +138,10 @@ check('bare superscript ref (no brackets)', content:find('footnote%-ref"><a[^>]*
 
 -- Syntax highlighting + GFM inline
 check('hljs highlighted lua keyword', content:find('hljs%-keyword">local<') ~= nil)
+check(
+  'code blocks carry a copy button',
+  content:find('<div class="mdpv%-pre"><pre>') ~= nil and content:find('class="mdpv%-copy"') ~= nil
+)
 check('strikethrough rendered', content:find('<s>strikethrough</s>', 1, true) ~= nil)
 check('autolinked bare URL', content:find('<a href="https://example.com">https://example.com</a>', 1, true) ~= nil)
 check('table rendered', content:find('<table>', 1, true) ~= nil)
@@ -144,6 +161,7 @@ check(
 )
 check('mermaid node label present', content:find('Edit buffer', 1, true) ~= nil)
 check('no mermaid parse error', content:find('mdpv-error', 1, true) == nil)
+check('mermaid pan/zoom controls attached', content:find('mdpv%-diagram%-controls') ~= nil)
 
 -- Emoji shortcodes
 check('emoji shortcode expanded', content:find('\240\159\154\128', 1, true) ~= nil) -- 🚀
@@ -154,6 +172,13 @@ check('frontmatter value cell', content:find('FRONTMATTER_TITLE_VALUE</td>', 1, 
 check('frontmatter list joined', content:find('alpha, beta', 1, true) ~= nil)
 check('frontmatter nested map flattened', content:find('status: passing, ci: local', 1, true) ~= nil)
 check('frontmatter not rendered as markdown', content:find('<p>title:', 1, true) == nil)
+
+-- Outline panel (menu) built from the slugged headings
+check(
+  'outline items built from headings',
+  dom:find('<a href="#sample%-document" class="outline%-h1">') ~= nil
+    and dom:find('<a href="#code" class="outline%-h3">') ~= nil
+)
 
 -- Scroll sync + diffing plumbing
 check('blocks carry data-source-line', content:find('data-source-line="', 1, true) ~= nil)

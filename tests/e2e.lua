@@ -294,6 +294,95 @@ check(
   end, 10)
 )
 
+-- --- Task checkbox toggle: the page POSTs it, the buffer line flips ----------
+
+local function post_toggle(line, checked)
+  return http({
+    '-o',
+    '/dev/null',
+    '-w',
+    '%{http_code}',
+    '--max-time',
+    '5',
+    '-X',
+    'POST',
+    '-d',
+    ('{"toggle":{"line":%d,"checked":%s}}'):format(line, checked and 'true' or 'false'),
+    base .. '/sync/' .. token,
+  })
+end
+local task_line
+for i, l in ipairs(vim.api.nvim_buf_get_lines(buf1, 0, -1, false)) do
+  if l:find('%[ %]') then
+    task_line = i
+    break
+  end
+end
+check('fixture has an unchecked task', task_line ~= nil)
+pres = post_toggle(task_line, true)
+check('POST toggle is 204', pres.stdout == '204', pres.stdout)
+check(
+  'checkbox click checked the buffer line',
+  vim.wait(2000, function()
+    return (vim.api.nvim_buf_get_lines(buf1, task_line - 1, task_line, false)[1] or ''):find('%[x%]') ~= nil
+  end, 10)
+)
+pres = post_toggle(task_line, false)
+check(
+  'toggle back unchecks it',
+  vim.wait(2000, function()
+    return (vim.api.nvim_buf_get_lines(buf1, task_line - 1, task_line, false)[1] or ''):find('%[ %]') ~= nil
+  end, 10)
+)
+local before_toggle = vim.api.nvim_buf_get_lines(buf1, 0, 1, false)[1]
+post_toggle(1, true)
+vim.wait(300)
+check('non-task line is left alone', vim.api.nvim_buf_get_lines(buf1, 0, 1, false)[1] == before_toggle)
+
+-- --- Live asset reload: a served file changing pushes an `assets` event ------
+
+local watch_dir = vim.fn.tempname()
+vim.fn.mkdir(watch_dir, 'p')
+local function write_file(path, data)
+  local f = assert(io.open(path, 'wb'))
+  f:write(data)
+  f:close()
+end
+write_file(watch_dir .. '/pic.png', 'PNG0')
+write_file(watch_dir .. '/doc.md', '# Doc\n\n![pic](pic.png)\n')
+vim.cmd.edit(watch_dir .. '/doc.md')
+local wbuf = vim.api.nvim_get_current_buf()
+local wurl = require('mdpv').open(wbuf)
+local wtoken = wurl and wurl:match('/p/(%x+)$')
+check('watched preview opened', wtoken ~= nil)
+-- Serving the image is what registers the watch.
+local ires = http({ '-o', '/dev/null', '-w', '%{http_code}', '--max-time', '5', base .. '/f/' .. wtoken .. '/pic.png' })
+check('watched image served', ires.stdout == '200', ires.stdout)
+local asset_out = ''
+vim.system({ 'curl', '-sN', '--max-time', '4', base .. '/events/' .. wtoken }, {
+  text = true,
+  stdout = function(_, d)
+    if d then
+      asset_out = asset_out .. d
+    end
+  end,
+}, function() end)
+vim.wait(500)
+write_file(watch_dir .. '/pic.png', 'PNG1-CHANGED')
+local saw_asset = vim.wait(3000, function()
+  return asset_out:find('event: assets', 1, true) ~= nil and asset_out:find('pic.png', 1, true) ~= nil
+end, 50)
+check('image change pushed an assets event', saw_asset, asset_out)
+vim.cmd('bwipeout! ' .. wbuf)
+-- Pump the loop until the deferred auto-close lands (url() would be nil for
+-- the wiped buffer immediately, so count previews instead).
+check(
+  'watched preview auto-closed',
+  vim.wait(2000, function()
+    return #require('mdpv').list() == 1
+  end, 10)
+)
+
 -- --- Multiple simultaneous previews ------------------------------------------
 
 vim.cmd.edit(root .. '/tests/fixtures/second.md')
@@ -342,12 +431,15 @@ local down = vim.wait(1000, function()
 end)
 check('server auto-stops after last preview', down)
 
--- Server restarts cleanly for a fresh preview.
+-- Server restarts cleanly for a fresh preview (reconfigured with KaTeX
+-- macros, which must ship to the page in the feature flags).
+require('mdpv').setup({ open_browser = false, math = { macros = { ['\\RR'] = '\\mathbb{R}' } } })
 vim.cmd.edit(root .. '/tests/fixtures/second.md')
 local url3 = require('mdpv').open(0)
 check('server restarts on demand', url3 ~= nil)
-local s3 = get(url3)
+local s3, body3 = get(url3)
 check('restarted preview page is 200', s3 == 200, s3)
+check('math macros ship in the boot payload', body3:find('mathbb', 1, true) ~= nil)
 require('mdpv').stop()
 check('stop clears previews', #require('mdpv').list() == 0)
 

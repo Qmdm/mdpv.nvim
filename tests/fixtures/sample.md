@@ -76,6 +76,12 @@ plain fenced block
 > [!unknown]
 > Not a callout type, stays a blockquote.
 
+### Wikilinks
+
+Plain [[second]], aliased [[second|the second page]], heading
+[[#wikilinks]], cross-page heading [[second#top|jump]], and an embedded
+image ![[img.png]].
+
 ### Math
 
 Euler's identity $e^{i\pi} + 1 = 0$ inline, five dollars ($5) untouched.

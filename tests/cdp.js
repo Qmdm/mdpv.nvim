@@ -9,6 +9,12 @@
 //                                          then scroll like a user would
 //                                          (browser -> editor); prints
 //                                          SCROLLED <y> and exits 0.
+//   node tests/cdp.js toggle-task <url>    print LOADED, click the first
+//                                          unchecked task checkbox with a
+//                                          trusted click (prints CLICKED
+//                                          <line>), then wait for the editor's
+//                                          re-render to confirm the checked
+//                                          state (prints SYNCED) and exit 0.
 //
 // Exits non-zero on any timeout. Chromium binary from $MDPV_CHROME.
 'use strict';
@@ -94,15 +100,68 @@ async function run(wsUrl) {
   if (mode === 'watch-scroll') {
     // Editor -> browser: the Lua side moves the cursor once it sees LOADED;
     // wait for the resulting smooth scroll to land.
-    for (let i = 0; i < 100; i++) {
+    let scrolled = false;
+    for (let i = 0; i < 100 && !scrolled; i++) {
       const y = await evaluate('window.scrollY');
       if (y > 200) {
         console.log('SCROLLED ' + Math.round(y));
+        scrolled = true;
+      } else {
+        await sleep(100);
+      }
+    }
+    if (!scrolled) return die('TIMEOUT: page never scrolled', 1);
+    // The block under the cursor should carry the indicator class.
+    for (let i = 0; i < 50; i++) {
+      if (await evaluate("!!document.querySelector('#content .mdpv-cursor')")) {
+        console.log('MARKED');
+        break;
+      }
+      await sleep(100);
+    }
+    // The Lua side now parks the cursor on the '### Footnotes' heading line;
+    // the URL hash should follow.
+    for (let i = 0; i < 100; i++) {
+      const hash = await evaluate('location.hash');
+      if (hash === '#footnotes') {
+        console.log('HASH ' + hash);
         return die('', 0);
       }
       await sleep(100);
     }
-    return die('TIMEOUT: page never scrolled', 1);
+    return die('TIMEOUT: hash never followed the heading', 1);
+  }
+
+  if (mode === 'toggle-task') {
+    // Click like a user (trusted event); the page POSTs the toggle, the
+    // editor flips the source line, and the SSE re-render arrives with the
+    // checkbox now checked in markup (a `checked` attribute, not just the
+    // click's transient property).
+    const info = await evaluate(`(() => {
+      const box = document.querySelector('#content input.task-list-item-checkbox:not([checked])');
+      if (!box || box.disabled) return null;
+      box.scrollIntoView({ block: 'center', behavior: 'instant' });
+      const r = box.getBoundingClientRect();
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2,
+               line: +box.closest('[data-source-line]').dataset.sourceLine };
+    })()`);
+    if (!info) return die('FAIL: no enabled unchecked task checkbox', 1);
+    await send('Input.dispatchMouseEvent',
+      { type: 'mousePressed', x: info.x, y: info.y, button: 'left', clickCount: 1 }, sid);
+    await send('Input.dispatchMouseEvent',
+      { type: 'mouseReleased', x: info.x, y: info.y, button: 'left', clickCount: 1 }, sid);
+    console.log('CLICKED ' + info.line);
+    for (let i = 0; i < 100; i++) {
+      const synced = await evaluate(
+        `!!document.querySelector('#content [data-source-line="${info.line}"] input.task-list-item-checkbox[checked]')`,
+      );
+      if (synced) {
+        console.log('SYNCED');
+        return die('', 0);
+      }
+      await sleep(100);
+    }
+    return die('TIMEOUT: checkbox state never came back from the editor', 1);
   }
 
   if (mode === 'user-scroll') {

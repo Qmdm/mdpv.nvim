@@ -11,6 +11,8 @@
   // an instant first paint.
   const BOOT = JSON.parse(document.getElementById('mdpv-boot').textContent);
   const FEATURES = BOOT.features || {};
+  // math is false | true | {macros: …} — KaTeX options configured editor-side.
+  const MATH_OPTS = (typeof FEATURES.math === 'object' && FEATURES.math) || {};
   const FILE_BASE = BOOT.base || `/f/${BOOT.token}`;
   // Session cache-buster, recovered from our own <script src="...?v=...">
   // so lazily loaded vendor assets (KaTeX, Mermaid) get the same versioning.
@@ -25,8 +27,10 @@
 
   // Primer octicons: GitHub's own glyphs for its five alerts, plus stand-ins
   // for the icons of Obsidian's remaining callout types.
-  const svg = (cls, path) =>
-    `<svg class="octicon ${cls}" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="${path}"></path></svg>`;
+  const svg = (cls, ...paths) =>
+    `<svg class="octicon ${cls}" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">${paths
+      .map((d) => `<path fill="currentColor" d="${d}"></path>`)
+      .join('')}</svg>`;
   const OCTICON = {
     link: svg('octicon-link', 'm7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z'),
     info: svg('octicon-info mr-2', 'M0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8Zm8-6.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13ZM6.5 7.75A.75.75 0 0 1 7.25 7h1a.75.75 0 0 1 .75.75v2.75h.25a.75.75 0 0 1 0 1.5h-2a.75.75 0 0 1 0-1.5h.25v-2h-.25a.75.75 0 0 1-.75-.75ZM8 6a1 1 0 1 1 0-2 1 1 0 0 1 0 2Z'),
@@ -44,6 +48,11 @@
     listUnordered: svg('octicon-list-unordered mr-2', 'M5.75 2.5h8.5a.75.75 0 0 1 0 1.5h-8.5a.75.75 0 0 1 0-1.5Zm0 5h8.5a.75.75 0 0 1 0 1.5h-8.5a.75.75 0 0 1 0-1.5Zm0 5h8.5a.75.75 0 0 1 0 1.5h-8.5a.75.75 0 0 1 0-1.5ZM2 14a1 1 0 1 1 0-2 1 1 0 0 1 0 2Zm1-6a1 1 0 1 1-2 0 1 1 0 0 1 2 0ZM2 4a1 1 0 1 1 0-2 1 1 0 0 1 0 2Z'),
     quote: svg('octicon-quote mr-2', 'M1.75 2.5h10.5a.75.75 0 0 1 0 1.5H1.75a.75.75 0 0 1 0-1.5Zm4 5h8.5a.75.75 0 0 1 0 1.5h-8.5a.75.75 0 0 1 0-1.5Zm0 5h8.5a.75.75 0 0 1 0 1.5h-8.5a.75.75 0 0 1 0-1.5ZM2.5 7.75v6a.75.75 0 0 1-1.5 0v-6a.75.75 0 0 1 1.5 0Z'),
     chevronDown: svg('octicon-chevron-down mdpv-fold', 'M12.78 5.22a.749.749 0 0 1 0 1.06l-4.25 4.25a.749.749 0 0 1-1.06 0L3.22 6.28a.749.749 0 1 1 1.06-1.06L8 8.939l3.72-3.719a.749.749 0 0 1 1.06 0Z'),
+    copy: svg('octicon-copy', 'M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z', 'M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z'),
+    check: svg('octicon-check', 'M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0Z'),
+    plus: svg('octicon-plus', 'M7.75 2a.75.75 0 0 1 .75.75V7h4.25a.75.75 0 0 1 0 1.5H8.5v4.25a.75.75 0 0 1-1.5 0V8.5H2.75a.75.75 0 0 1 0-1.5H7V2.75A.75.75 0 0 1 7.75 2Z'),
+    dash: svg('octicon-dash', 'M2 7.75A.75.75 0 0 1 2.75 7h10a.75.75 0 0 1 0 1.5h-10A.75.75 0 0 1 2 7.75Z'),
+    sync: svg('octicon-sync', 'M1.705 8.005a.75.75 0 0 1 .834.656 5.5 5.5 0 0 0 9.592 2.97l-1.204-1.204a.25.25 0 0 1 .177-.427h3.646a.25.25 0 0 1 .25.25v3.646a.25.25 0 0 1-.427.177l-1.38-1.38A7.002 7.002 0 0 1 1.05 8.84a.75.75 0 0 1 .656-.834ZM8 2.5a5.487 5.487 0 0 0-4.131 1.869l1.204 1.204A.25.25 0 0 1 4.896 6H1.25A.25.25 0 0 1 1 5.75V2.104a.25.25 0 0 1 .427-.177l1.38 1.38A7.002 7.002 0 0 1 14.95 7.16a.75.75 0 0 1-1.49.178A5.5 5.5 0 0 0 8 2.5Z'),
   };
 
   // Math is parsed with markdown-it rules (adapted from markdown-it-katex,
@@ -150,16 +159,75 @@
 
   // No highlight() hook: fenced code renders escaped with a language-x class
   // and highlightCode() rewrites it in place once highlight.js lazy-loads.
+  // Obsidian wikilinks: [[Page]], [[Page|alias]], [[Page#Heading]], and
+  // ![[img.png]] image embeds. A page without a known file extension resolves
+  // to <page>.md, so vault-style links render through the /f/ route like any
+  // relative link; heading fragments slug the same way heading anchors do.
+  // GitHub renders [[…]] literally outside wikis, hence the feature flag.
+  const WIKI_EXT_RE = /\.(md|markdown|png|jpe?g|gif|svg|webp|avif|bmp|ico|pdf|txt|mp[34]|webm|ogg|wav|mov)$/i;
+  const WIKI_IMG_RE = /\.(png|jpe?g|gif|svg|webp|avif|bmp|ico)$/i;
+  function wikilinkPlugin(mdi) {
+    const slugify = (text) =>
+      text
+        .trim()
+        .toLowerCase()
+        .replace(/[^\p{L}\p{N}\p{Emoji_Presentation} _-]/gu, '')
+        .replace(/ /g, '-');
+    function wikilink(state, silent) {
+      const src = state.src;
+      let pos = state.pos;
+      const embed = src.charCodeAt(pos) === 0x21; /* ! */
+      if (embed) pos += 1;
+      if (src.charCodeAt(pos) !== 0x5b || src.charCodeAt(pos + 1) !== 0x5b /* [[ */) return false;
+      const close = src.indexOf(']]', pos + 2);
+      if (close === -1) return false;
+      const inner = src.slice(pos + 2, close);
+      if (!inner.trim() || /[[\]\n]/.test(inner)) return false;
+      const bar = inner.indexOf('|');
+      const target = (bar === -1 ? inner : inner.slice(0, bar)).trim();
+      const alias = bar === -1 ? '' : inner.slice(bar + 1).trim();
+      const hashAt = target.indexOf('#');
+      const page = (hashAt === -1 ? target : target.slice(0, hashAt)).trim();
+      const heading = hashAt === -1 ? '' : target.slice(hashAt + 1).trim();
+      if (!page && !heading) return false;
+      if (!silent) {
+        const hash = heading ? `#${slugify(heading)}` : '';
+        const href = page ? encodeURI(WIKI_EXT_RE.test(page) ? page : `${page}.md`) + hash : hash;
+        if (embed && page && WIKI_IMG_RE.test(page)) {
+          const img = state.push('image', 'img', 0);
+          img.attrs = [['src', href], ['alt', '']];
+          const alt = new state.Token('text', '', 0);
+          alt.content = alias || page;
+          img.children = [alt];
+        } else {
+          // Non-image embeds degrade to a plain link (no transclusion).
+          const open = state.push('link_open', 'a', 1);
+          open.attrs = [['href', href]];
+          open.markup = 'wikilink';
+          const text = state.push('text', '', 0);
+          text.content = alias || target;
+          state.push('link_close', 'a', -1);
+        }
+      }
+      state.pos = close + 2;
+      return true;
+    }
+    mdi.inline.ruler.before('link', 'wikilink', wikilink);
+  }
+
   const md = window
     .markdownit({
       html: true, // raw HTML passes through, DOMPurify sanitizes after
       linkify: true, // GFM autolinks bare URLs
       typographer: false, // GitHub does not smart-quote
     })
-    .use(window.markdownitTaskLists) // emits GitHub's task-list-item classes
+    // GitHub's task-list-item classes; live previews render the checkboxes
+    // enabled so a click can toggle the source line (see the change listener).
+    .use(window.markdownitTaskLists, { enabled: !BOOT.static })
     .use(window.markdownitFootnote);
   if (FEATURES.emoji !== false && window.markdownitEmoji) md.use(window.markdownitEmoji);
   if (FEATURES.math !== false) md.use(mathPlugin);
+  if (FEATURES.wikilinks !== false) md.use(wikilinkPlugin);
 
   // Every block element carries its markdown source line so the page can
   // scroll to wherever the Neovim cursor is (scroll sync). `srcLineOffset`
@@ -395,6 +463,27 @@
     }
   }
 
+  // A hover copy button on every code block, like GitHub's. Runs on the
+  // detached copy before the diff, so both sides carry the same wrapper and
+  // the button survives morphdom untouched. (Math/mermaid fences are already
+  // swapped for placeholder divs by the time this runs.)
+  function addCopyButtons(root) {
+    for (const pre of root.querySelectorAll('pre')) {
+      if (!pre.querySelector(':scope > code')) continue;
+      const wrap = document.createElement('div');
+      wrap.className = 'mdpv-pre';
+      pre.replaceWith(wrap);
+      wrap.appendChild(pre);
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'mdpv-copy';
+      btn.title = 'Copy';
+      btn.setAttribute('aria-label', 'Copy code');
+      btn.innerHTML = OCTICON.copy;
+      wrap.appendChild(btn);
+    }
+  }
+
   // Point relative resources at the /f/<token>/ file route so images and
   // links next to the markdown file resolve like they do on GitHub. On a
   // statically rendered .md file the base is that file's own directory.
@@ -500,6 +589,9 @@
           window.katex.render(src, el, {
             displayMode: el.classList.contains('mdpv-math-display'),
             throwOnError: false, // invalid TeX renders in red, like a typo should
+            // KaTeX writes \gdef definitions into the macros object it's
+            // handed; a fresh copy per block keeps them order-independent.
+            macros: MATH_OPTS.macros ? { ...MATH_OPTS.macros } : undefined,
           });
         } catch (_) {
           el.textContent = src;
@@ -520,6 +612,65 @@
       });
     }));
 
+  // Pan/zoom on rendered diagrams: hover controls (+ / − / reset), drag to
+  // pan while zoomed, double-click to reset. The transform lives on the
+  // <svg>; morphdom keeps the typeset node (keyed by source), so the view
+  // survives edits elsewhere and resets naturally when the diagram changes.
+  function addDiagramControls(div) {
+    const svgEl = div.querySelector('svg');
+    if (!svgEl) return;
+    const view = { x: 0, y: 0, k: 1 };
+    const apply = () => {
+      const idle = view.k === 1 && view.x === 0 && view.y === 0;
+      svgEl.style.transform = idle ? '' : `translate(${view.x}px, ${view.y}px) scale(${view.k})`;
+      div.classList.toggle('mdpv-zoomed', !idle);
+    };
+    const zoom = (f) => {
+      view.k = Math.min(8, Math.max(0.25, view.k * f));
+      apply();
+    };
+    const reset = () => {
+      view.x = 0;
+      view.y = 0;
+      view.k = 1;
+      apply();
+    };
+    const controls = document.createElement('div');
+    controls.className = 'mdpv-diagram-controls';
+    for (const [icon, title, fn] of [
+      [OCTICON.plus, 'Zoom in', () => zoom(1.25)],
+      [OCTICON.dash, 'Zoom out', () => zoom(0.8)],
+      [OCTICON.sync, 'Reset view', reset],
+    ]) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.title = title;
+      b.innerHTML = icon;
+      b.addEventListener('click', fn);
+      controls.appendChild(b);
+    }
+    div.appendChild(controls);
+    let pan = null;
+    svgEl.addEventListener('pointerdown', (ev) => {
+      if (view.k === 1 || ev.button !== 0) return;
+      pan = { x: ev.clientX - view.x, y: ev.clientY - view.y };
+      svgEl.setPointerCapture(ev.pointerId);
+      ev.preventDefault(); // no text selection while panning
+    });
+    svgEl.addEventListener('pointermove', (ev) => {
+      if (!pan) return;
+      view.x = ev.clientX - pan.x;
+      view.y = ev.clientY - pan.y;
+      apply();
+    });
+    const endPan = () => {
+      pan = null;
+    };
+    svgEl.addEventListener('pointerup', endPan);
+    svgEl.addEventListener('pointercancel', endPan);
+    div.addEventListener('dblclick', reset);
+  }
+
   function typesetMermaid(root, gen) {
     const blocks = root.querySelectorAll('.mdpv-mermaid:not(.mdpv-typeset)');
     if (blocks.length === 0) return;
@@ -531,6 +682,7 @@
           const { svg } = await window.mermaid.render(id, div.dataset.mdpvSrc ?? div.textContent);
           if (gen !== generation) return;
           div.innerHTML = svg; // generated by vendored mermaid in strict mode
+          addDiagramControls(div);
         } catch (_) {
           document.getElementById(`d${id}`)?.remove(); // mermaid's error scratch node
           div.classList.add('mdpv-error'); // invalid diagram: source stays visible
@@ -569,6 +721,10 @@
   let firstRender = true;
   let generation = 0;
 
+  // Where scroll sync and the outline spy aim in the viewport: the upper
+  // third, which is where your eyes are.
+  const ANCHOR = 0.35;
+
   // Scroll-sync anchors, cached per render. They sit in document order with
   // non-decreasing source lines and offsets, so both lookups binary-search
   // instead of walking (and measuring) every mapped block per event.
@@ -577,14 +733,33 @@
     syncEls = [...$content.querySelectorAll('[data-source-line]')];
   };
 
-  // Rightmost index in syncEls whose measure(el) <= limit, or -1.
-  function bisect(limit, measure) {
+  // Cursor-block indicator: the block under the editor cursor carries a
+  // marker class while follow is on (set from the SSE scroll handler);
+  // re-applied per render because the diff wipes it.
+  let cursorLine = 0;
+  let cursorEl = null;
+
+  function paintCursorBlock() {
+    let el = null;
+    if (cursorLine > 0) {
+      const i = bisect(syncEls, cursorLine, (n) => +n.dataset.sourceLine);
+      el = i === -1 ? null : syncEls[i];
+      // Fenced code carries the line map on <code>; mark the block instead.
+      if (el && el.tagName === 'CODE' && el.parentElement?.tagName === 'PRE') el = el.parentElement;
+    }
+    if (cursorEl && cursorEl !== el) cursorEl.classList.remove('mdpv-cursor');
+    cursorEl = el;
+    if (el) el.classList.add('mdpv-cursor');
+  }
+
+  // Rightmost index in els whose measure(el) <= limit, or -1.
+  function bisect(els, limit, measure) {
     let lo = 0;
-    let hi = syncEls.length - 1;
+    let hi = els.length - 1;
     let found = -1;
     while (lo <= hi) {
       const mid = (lo + hi) >> 1;
-      if (measure(syncEls[mid]) <= limit) {
+      if (measure(els[mid]) <= limit) {
         found = mid;
         lo = mid + 1;
       } else {
@@ -620,6 +795,7 @@
     polishFootnotes(next);
     rewriteRelativeUrls(next);
     normalizeTypeset(next);
+    addCopyButtons(next);
 
     const scrollX = window.scrollX;
     const scrollY = window.scrollY;
@@ -656,6 +832,8 @@
       $content.innerHTML = next.innerHTML; // fallback: full swap
     }
     refreshSyncEls();
+    rebuildOutline();
+    paintCursorBlock();
 
     highlightCode($content, gen);
     if (FEATURES.math !== false) typesetMath($content, gen);
@@ -807,6 +985,108 @@
     toggleMenu(false);
   });
 
+  // --- Outline ---------------------------------------------------------------
+  // A collapsible document outline in the menu, rebuilt per render from the
+  // headings (which already carry slug ids), with a scroll-spy highlight on
+  // the one under the viewport anchor.
+
+  const $outlineBtn = document.getElementById('outline-toggle');
+  const $outline = document.getElementById('outline-list');
+  let outlineHeads = [];
+  let outlineActive = null;
+
+  function setOutlineActive(link) {
+    if (link === outlineActive) return;
+    outlineActive?.classList.remove('active');
+    outlineActive = link || null;
+    if (link) {
+      link.classList.add('active');
+      link.scrollIntoView({ block: 'nearest' });
+    }
+  }
+
+  function markOutlineActive() {
+    if ($outline.hidden || outlineHeads.length === 0) return;
+    // A programmatic glide is in flight (outline click, go-to-top, cursor
+    // follow): whoever started it set the right active item; a spy pass
+    // mid-flight — or pinned at the page bottom — would fight it.
+    if (performance.now() < progUntil) return;
+    const anchor = window.scrollY + window.innerHeight * ANCHOR;
+    const i = bisect(outlineHeads, anchor, (h) => h.getBoundingClientRect().top + window.scrollY);
+    setOutlineActive($outline.children[Math.max(i, 0)]);
+  }
+
+  function rebuildOutline() {
+    outlineHeads = [...$content.querySelectorAll('h1[id],h2[id],h3[id],h4[id],h5[id],h6[id]')];
+    $outlineBtn.hidden = outlineHeads.length === 0;
+    if (outlineHeads.length === 0) {
+      $outline.hidden = true;
+      $outlineBtn.setAttribute('aria-expanded', 'false');
+    }
+    outlineActive = null;
+    $outline.textContent = '';
+    for (const h of outlineHeads) {
+      const a = document.createElement('a');
+      a.href = `#${h.id}`;
+      a.className = `outline-${h.tagName.toLowerCase()}`;
+      a.textContent = h.textContent;
+      $outline.appendChild(a);
+    }
+    markOutlineActive();
+  }
+
+  // Follow-mode hook: pick the active item by source line — the spy is
+  // suppressed while the programmatic glide is in flight.
+  function outlineActiveByLine(line) {
+    if (outlineHeads.length === 0) return;
+    const i = bisect(outlineHeads, line, (h) => +h.dataset.sourceLine);
+    setOutlineActive($outline.children[Math.max(i, 0)]);
+  }
+
+  $outlineBtn.addEventListener('click', () => {
+    const show = $outline.hidden;
+    $outline.hidden = !show;
+    $outlineBtn.setAttribute('aria-expanded', String(show));
+    if (show) markOutlineActive();
+  });
+  $outline.addEventListener('click', (ev) => {
+    const a = ev.target.closest('a');
+    if (!a) return;
+    ev.preventDefault();
+    const target = document.getElementById(decodeURIComponent(a.hash.slice(1)));
+    if (!target) return;
+    history.replaceState(null, '', a.hash);
+    progUntil = performance.now() + 1200;
+    window.scrollTo({ top: target.getBoundingClientRect().top + window.scrollY - 12, behavior: 'smooth' });
+    setOutlineActive(a);
+  });
+  let spyRaf = 0;
+  window.addEventListener('scroll', () => {
+    if (spyRaf) return;
+    spyRaf = requestAnimationFrame(() => {
+      spyRaf = 0;
+      markOutlineActive();
+    });
+  }, { passive: true });
+
+  // --- Copy buttons ----------------------------------------------------------
+  // 127.0.0.1 is a secure context, so navigator.clipboard is available.
+
+  $content.addEventListener('click', (ev) => {
+    const btn = ev.target.closest('button.mdpv-copy');
+    if (!btn) return;
+    const code = btn.parentElement.querySelector('pre > code');
+    if (!code || !navigator.clipboard) return;
+    navigator.clipboard.writeText(code.textContent).then(() => {
+      btn.classList.add('mdpv-copied');
+      btn.innerHTML = OCTICON.check;
+      setTimeout(() => {
+        btn.classList.remove('mdpv-copied');
+        btn.innerHTML = OCTICON.copy;
+      }, 1500);
+    }, () => {});
+  });
+
   // First paint from the embedded boot payload — no SSE round-trip needed.
   if (typeof BOOT.md === 'string') render(BOOT.md);
 
@@ -816,6 +1096,22 @@
     setStatus('static', 'static file', 'Rendered from disk — not a live buffer');
     return;
   }
+
+  // --- Task checkboxes -------------------------------------------------------
+  // A click POSTs the new state; the editor flips [ ]/[x] on that line (the
+  // buffer must be modifiable) and the change streams back through the normal
+  // render path, which confirms the box's state.
+
+  $content.addEventListener('change', (ev) => {
+    const box = ev.target;
+    if (!(box instanceof HTMLInputElement) || !box.classList.contains('task-list-item-checkbox')) return;
+    const li = box.closest('[data-source-line]');
+    if (!li) return;
+    fetch(`/sync/${BOOT.token}`, {
+      method: 'POST',
+      body: JSON.stringify({ toggle: { line: +li.dataset.sourceLine, checked: box.checked } }),
+    }).catch(() => {});
+  });
 
   // --- Scroll sync -----------------------------------------------------------
   // Editor -> browser: the server streams the cursor line; block elements
@@ -827,7 +1123,6 @@
   // re-broadcasting a cursor line it just applied.
 
   const SYNC = FEATURES.scrollSync; // false | true | 'both'
-  const ANCHOR = 0.35; // aim sync at the upper third — where your eyes are
   let follow = localStorage.getItem('mdpv-follow') !== '0';
   let lastSentLine = 0;
 
@@ -841,12 +1136,26 @@
       follow = !follow;
       localStorage.setItem('mdpv-follow', follow ? '1' : '0');
       paintFollow();
+      if (!follow) {
+        cursorLine = 0;
+        paintCursorBlock();
+      }
     });
+  }
+
+  // Deep-linkable position: when the cursor sits on a heading line, mirror
+  // its slug into the URL hash (replaceState: no scroll, no history spam).
+  function syncHashToCursor(line) {
+    const i = bisect(syncEls, line, (n) => +n.dataset.sourceLine);
+    const el = i === -1 ? null : syncEls[i];
+    if (el && /^H[1-6]$/.test(el.tagName) && el.id && +el.dataset.sourceLine === line) {
+      history.replaceState(null, '', `#${el.id}`);
+    }
   }
 
   function scrollToLine(line) {
     progUntil = performance.now() + 1200; // smooth scroll settles well within this
-    const i = bisect(line, (el) => +el.dataset.sourceLine);
+    const i = bisect(syncEls, line, (el) => +el.dataset.sourceLine);
     if (i === -1) {
       window.scrollTo({ top: 0, behavior: 'smooth' });
       return;
@@ -869,7 +1178,7 @@
   function lineAtAnchor() {
     const anchor = window.scrollY + window.innerHeight * ANCHOR;
     const top = (el) => el.getBoundingClientRect().top + window.scrollY;
-    const i = bisect(anchor, top);
+    const i = bisect(syncEls, anchor, top);
     if (i === -1) return 1;
     const prev = syncEls[i];
     const next = syncEls[i + 1];
@@ -929,6 +1238,40 @@
     if (typeof payload.line === 'number') {
       lastSentLine = payload.line; // don't POST straight back what we just applied
       scrollToLine(payload.line);
+      cursorLine = payload.line;
+      paintCursorBlock();
+      outlineActiveByLine(payload.line);
+      syncHashToCursor(payload.line);
+    }
+  });
+
+  // Live asset reload: the server watches files it has served and pushes the
+  // relative paths that changed; cache-bust the matching media elements so a
+  // regenerated image refreshes without reloading the page.
+  let assetSeq = 0;
+  es.addEventListener('assets', (ev) => {
+    let payload;
+    try {
+      payload = JSON.parse(ev.data);
+    } catch (_) {
+      return;
+    }
+    if (!Array.isArray(payload.paths)) return;
+    const targets = new Set(payload.paths.map((p) => `${FILE_BASE}/${p}`));
+    assetSeq += 1;
+    for (const el of $content.querySelectorAll('img[src], video[src], audio[src], source[src]')) {
+      const u = new URL(el.getAttribute('src'), location.href);
+      let file;
+      try {
+        file = decodeURIComponent(u.pathname);
+      } catch (_) {
+        continue;
+      }
+      if (u.origin !== location.origin || !targets.has(file)) continue;
+      u.searchParams.set('r', String(assetSeq));
+      el.setAttribute('src', u.pathname + u.search);
+      const media = el.tagName === 'SOURCE' ? el.parentElement : el;
+      if (media && (media.tagName === 'VIDEO' || media.tagName === 'AUDIO')) media.load();
     }
   });
 

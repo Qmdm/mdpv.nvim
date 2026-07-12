@@ -23,15 +23,26 @@ styled with GitHub's actual CSS.
   `> [!faq]- …` / `> [!tip]+ …`, and nesting.
 - **Math, Mermaid, emoji, frontmatter tables** — KaTeX (`$…$`, `$$…$$`,
   ` ```math `) and Mermaid (` ```mermaid `) are vendored and load only when a
-  document uses them.
-- **Scroll sync** — the preview follows your cursor; `scroll_sync = 'both'`
-  lets page scrolls move the cursor back.
+  document uses them; diagrams get hover pan/zoom controls.
+- **Scroll sync** — the preview follows your cursor with a subtle marker on
+  the current block, and parks the URL hash on the heading you're editing;
+  `scroll_sync = 'both'` lets page scrolls move the cursor back.
+- **Clickable task lists** — tick a checkbox in the preview and the
+  `- [ ]`/`- [x]` flips on that line in your buffer.
 - **Flicker-free updates** — DOM-diffed with morphdom, so images don't reload
   and open `<details>` stay open.
+- **Live image reload** — regenerate a screenshot or diagram on disk and every
+  open preview refreshes just that image (`reload_images`).
 - **Multiple previews at once** — one shared server, an unguessable URL per
   buffer.
 - **Relative links resolve like on GitHub** — a linked `.md` renders as a page
   too (`?raw` for source).
+- **Wikilinks** — `[[page]]`, `[[page|alias]]`, `[[page#heading]]`, and
+  `![[image.png]]` embeds resolve Obsidian-style against the file's directory
+  (`wikilinks = false` renders them literally, like GitHub).
+- **Document outline** — a scroll-spied table of contents in the floating
+  menu; click to jump.
+- **Copy button** on every code block, GitHub-style.
 - **Instant first paint**, **auto light/dark** (toggleable in-page, along with
   full width and follow), and a localhost-only server with strict CSP +
   DOMPurify.
@@ -93,9 +104,12 @@ require('mdpv').setup({
   auto_stop = true,        -- stop the server when the last preview closes
   open_browser = true,     -- false: only print the URL (headless/SSH — then
                            -- forward the port and open it yourself)
-  math = true,             -- $…$ / $$…$$ / ```math via KaTeX (lazy-loaded)
+  math = true,             -- $…$ / $$…$$ / ```math via KaTeX (lazy-loaded);
+                           -- or { macros = { ['\\RR'] = '\\mathbb{R}' } }
   mermaid = true,          -- ```mermaid diagrams (lazy-loaded)
   emoji = true,            -- :shortcode: expansion
+  wikilinks = true,        -- [[page]] links + ![[image]] embeds, Obsidian style
+  reload_images = true,    -- refresh images in open previews when they change on disk
   scroll_sync = true,      -- preview follows the cursor (toggleable in-page);
                            -- 'both': page scrolls also move the cursor
 })

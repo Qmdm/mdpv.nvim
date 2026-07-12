@@ -16,7 +16,11 @@ local M = {}
 ---@field timer uv.uv_timer_t debounce timer
 ---@field scroll_timer uv.uv_timer_t? cursor-sync debounce timer
 ---@field on_sync fun(line: integer)? browser->editor cursor move (scroll_sync = 'both')
+---@field on_toggle fun(line: integer, checked: boolean)? browser->editor task checkbox flip
 ---@field augroup integer
+---@field watches table<string, { handle: uv.uv_fs_event_t, files: table<string, string> }>? dir watchers for served files (server-managed)
+---@field changed_assets table<string, true>? rels pending an `assets` event (server-managed)
+---@field asset_timer uv.uv_timer_t? asset-event debounce (server-managed)
 
 M.previews = {} ---@type table<integer, mdpv.Preview> bufnr -> preview
 
@@ -52,9 +56,11 @@ end
 --- paint, no SSE round-trip). Main loop only.
 local function make_payload(pv, config)
   local features = {
-    math = config.math ~= false,
+    -- false | true | table of KaTeX options ({ macros = ... }), passed through
+    math = config.math == false and false or (type(config.math) == 'table' and config.math or true),
     mermaid = config.mermaid ~= false,
     emoji = config.emoji ~= false,
+    wikilinks = config.wikilinks ~= false,
     -- false | true (editor -> browser) | 'both' (adds browser -> editor)
     scrollSync = config.scroll_sync == nil and true or config.scroll_sync,
   }
@@ -195,6 +201,25 @@ function M.open(bufnr, config)
         vim.api.nvim_win_set_cursor(wins[1], { line, 0 })
       end
     end
+  end
+  -- Task-list checkboxes clicked in the page POST their new state; flip the
+  -- [ ]/[x] on that source line, provided it still is a task item. The buffer
+  -- change then streams back through the normal debounced update.
+  pv.on_toggle = function(line, checked)
+    if not (M.previews[bufnr] and vim.api.nvim_buf_is_valid(bufnr) and vim.bo[bufnr].modifiable) then
+      return
+    end
+    if line < 1 or line > vim.api.nvim_buf_line_count(bufnr) then
+      return
+    end
+    local text = vim.api.nvim_buf_get_lines(bufnr, line - 1, line, false)[1]
+    -- List marker ([-*+] or "1."/"1)"), optionally inside blockquote/callout
+    -- '>' prefixes, followed by the [ ]/[x] state box.
+    local marker = text:match('^([>%s]*[-*+]%s+%[)[ xX]%]') or text:match('^([>%s]*%d+[.%)]%s+%[)[ xX]%]')
+    if not marker then
+      return
+    end
+    vim.api.nvim_buf_set_text(bufnr, line - 1, #marker, line - 1, #marker + 1, { checked and 'x' or ' ' })
   end
   if config.auto_close then
     vim.api.nvim_create_autocmd({ 'BufUnload', 'BufWipeout' }, {

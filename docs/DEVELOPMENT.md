@@ -5,14 +5,15 @@
 All suites run headless and exit non-zero on failure:
 
 ```sh
-nvim --clean --headless -l tests/e2e.lua      # server, SSE, lifecycle (curl)
+nvim --clean --headless -l tests/e2e.lua      # server, SSE, ranges/304, lifecycle (curl)
 nvim --clean --headless -l tests/fidelity.lua # rendered DOM vs GitHub markup (chromium)
-nvim --clean --headless -l tests/sync.lua     # bidirectional scroll sync (chromium CDP + node)
+nvim --clean --headless -l tests/sync.lua     # scroll sync both ways, cursor marker, hash (chromium CDP + node)
+nvim --clean --headless -l tests/interact.lua # task-checkbox click round trip (chromium CDP + node)
 ```
 
 - `e2e.lua` needs `curl`.
-- `fidelity.lua` and `sync.lua` need a `chromium` binary; `sync.lua` also needs
-  Node 22+ (for its built-in WebSocket). Both skip cleanly when the binary is
+- The rest need a `chromium` binary; `sync.lua` and `interact.lua` also need
+  Node 22+ (for its built-in WebSocket). All skip cleanly when a binary is
   missing.
 
 ## Formatting & lint

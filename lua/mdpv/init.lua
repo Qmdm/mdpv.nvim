@@ -11,9 +11,13 @@ local defaults = {
   auto_close = true, -- close the preview when its buffer is unloaded
   auto_stop = true, -- stop the server when the last preview closes
   open_browser = true, -- false: only print the URL (headless/remote setups)
+  -- true/false, or a table of KaTeX options passed to the renderer:
+  -- math = { macros = { ['\\RR'] = '\\mathbb{R}' } }
   math = true, -- render $…$ / $$…$$ / ```math with KaTeX
   mermaid = true, -- render ```mermaid blocks as diagrams
   emoji = true, -- expand :shortcodes: like GitHub
+  wikilinks = true, -- [[page]] / [[page|alias]] / ![[img]] resolve like Obsidian
+  reload_images = true, -- watch served files; changed images refresh in open previews
   -- false: off | true: browser follows the cursor line (toggleable in-page)
   -- | 'both': additionally, scrolling the page moves the cursor
   scroll_sync = true,
@@ -32,9 +36,13 @@ function M.setup(opts)
   vim.validate('config.port', M.config.port, 'number')
   vim.validate('config.debounce', M.config.debounce, 'number')
   vim.validate('config.filetypes', M.config.filetypes, 'table')
-  vim.validate('config.math', M.config.math, 'boolean')
+  vim.validate('config.math', M.config.math, function(v)
+    return type(v) == 'boolean' or type(v) == 'table'
+  end, "boolean or a table like { macros = { ['\\\\RR'] = '\\\\mathbb{R}' } }")
   vim.validate('config.mermaid', M.config.mermaid, 'boolean')
   vim.validate('config.emoji', M.config.emoji, 'boolean')
+  vim.validate('config.wikilinks', M.config.wikilinks, 'boolean')
+  vim.validate('config.reload_images', M.config.reload_images, 'boolean')
   vim.validate('config.scroll_sync', M.config.scroll_sync, function(t)
     return t == true or t == false or t == 'both'
   end, "true, false or 'both'")
