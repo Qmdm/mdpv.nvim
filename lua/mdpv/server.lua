@@ -10,11 +10,21 @@
 ---   GET /                 index of active previews
 ---   GET /assets/<path>    plugin frontend assets (immutable-cached)
 ---
+--- This module owns routing, the SSE streams, and the connection lifecycle;
+--- wire-level helpers live in mdpv.http, file responses in mdpv.files, and
+--- the served-file watchers (live image reload) in mdpv.watch.
+---
 --- All socket callbacks run in libuv's fast context: no vim.api calls happen
 --- there. Anything that needs buffer state hops to the main loop via
 --- vim.schedule.
 
 local uv = vim.uv
+local http = require('mdpv.http')
+local files = require('mdpv.files')
+local watch = require('mdpv.watch')
+
+local respond, close_sock, sse_frame = http.respond, http.close_sock, http.sse_frame
+local MIME = http.MIME
 
 local M = {}
 
@@ -39,52 +49,8 @@ local state = {
 local plugin_root = vim.fn.fnamemodify(debug.getinfo(1, 'S').source:sub(2), ':h:h:h')
 local asset_dir = plugin_root .. '/assets'
 
-local REASONS = {
-  [200] = 'OK',
-  [204] = 'No Content',
-  [206] = 'Partial Content',
-  [304] = 'Not Modified',
-  [400] = 'Bad Request',
-  [403] = 'Forbidden',
-  [404] = 'Not Found',
-  [405] = 'Method Not Allowed',
-  [413] = 'Payload Too Large',
-  [416] = 'Range Not Satisfiable',
-  [431] = 'Request Header Fields Too Large',
-  [500] = 'Internal Server Error',
-}
-
-local MIME = {
-  html = 'text/html; charset=utf-8',
-  js = 'text/javascript; charset=utf-8',
-  css = 'text/css; charset=utf-8',
-  json = 'application/json',
-  txt = 'text/plain; charset=utf-8',
-  md = 'text/plain; charset=utf-8',
-  markdown = 'text/plain; charset=utf-8',
-  svg = 'image/svg+xml',
-  png = 'image/png',
-  jpg = 'image/jpeg',
-  jpeg = 'image/jpeg',
-  gif = 'image/gif',
-  webp = 'image/webp',
-  avif = 'image/avif',
-  bmp = 'image/bmp',
-  ico = 'image/x-icon',
-  mp4 = 'video/mp4',
-  webm = 'video/webm',
-  mov = 'video/quicktime',
-  mp3 = 'audio/mpeg',
-  ogg = 'audio/ogg',
-  wav = 'audio/wav',
-  pdf = 'application/pdf',
-  woff2 = 'font/woff2',
-}
-
-local MAX_FILE_BYTES = 64 * 1024 * 1024 -- refuse to buffer files larger than this in memory
 local MAX_HEADER_BYTES = 16 * 1024
 local MAX_BODY_BYTES = 4 * 1024 -- POST bodies are tiny sync messages
-local CHUNK_BYTES = 256 * 1024 -- streamed file responses go out in pieces this size
 
 --- Theme -> stylesheets injected into the page shell.
 local THEME_CSS = {
@@ -104,361 +70,6 @@ local function css_links(theme)
   return table.concat(out, '\n')
 end
 
-local function close_sock(sock)
-  if sock and not sock:is_closing() then
-    sock:close()
-  end
-end
-
---- Write `data` then close the connection once flushed.
-local function write_and_close(sock, data)
-  local ok = pcall(sock.write, sock, data, function()
-    close_sock(sock)
-  end)
-  if not ok then
-    close_sock(sock)
-  end
-end
-
-local function respond(sock, status, headers, body)
-  if status == 304 then
-    body = '' -- a 304 must not carry content (nor a Content-Length claiming so)
-  else
-    body = body or (status ~= 200 and status ~= 204 and (REASONS[status] or '') or '')
-  end
-  local lines = { ('HTTP/1.1 %d %s'):format(status, REASONS[status] or 'OK') }
-  headers = headers or {}
-  if not headers['Content-Type'] then
-    headers['Content-Type'] = 'text/plain; charset=utf-8'
-  end
-  if status ~= 304 then
-    headers['Content-Length'] = tostring(#body)
-  end
-  headers['Connection'] = 'close'
-  for k, v in pairs(headers) do
-    lines[#lines + 1] = k .. ': ' .. v
-  end
-  lines[#lines + 1] = ''
-  lines[#lines + 1] = body
-  write_and_close(sock, table.concat(lines, '\r\n'))
-end
-
-local function sse_frame(event, data)
-  return 'event: ' .. event .. '\ndata: ' .. data .. '\n\n'
-end
-
-local function html_escape(s)
-  return (
-    s:gsub('[&<>"\']', {
-      ['&'] = '&amp;',
-      ['<'] = '&lt;',
-      ['>'] = '&gt;',
-      ['"'] = '&quot;',
-      ["'"] = '&#39;',
-    })
-  )
-end
-
-local function percent_decode(s)
-  return (s:gsub('%%(%x%x)', function(h)
-    return string.char(tonumber(h, 16))
-  end))
-end
-
---- Case-insensitive request-header lookup; `name` must be given lowercase.
-local function req_header(head, name)
-  for k, v in head:gmatch('\r\n([%w%-]+):[ \t]*([^\r\n]*)') do
-    if k:lower() == name then
-      return (v:gsub('%s+$', ''))
-    end
-  end
-end
-
-local function http_date(sec)
-  return os.date('!%a, %d %b %Y %H:%M:%S GMT', sec)
-end
-
---- Parse a single-range `bytes=a-b` header value against a file of `size`
---- bytes. Returns 0-based inclusive first,last; nil to serve the whole file
---- (absent, malformed, or multi-range headers degrade to a full 200); or
---- 'unsatisfiable' (start beyond EOF) which must answer 416.
-local function parse_range(spec, size)
-  if not spec or size == 0 then
-    return nil
-  end
-  local a, b = spec:match('^%s*bytes%s*=%s*(%d*)%-(%d*)%s*$')
-  if not a or (a == '' and b == '') then
-    return nil
-  end
-  if a == '' then
-    local n = tonumber(b) or 0 -- suffix form: the last n bytes
-    if n == 0 then
-      return 'unsatisfiable'
-    end
-    return math.max(0, size - n), size - 1
-  end
-  local first = tonumber(a) or 0
-  if first >= size then
-    return 'unsatisfiable'
-  end
-  local bn = tonumber(b)
-  local last = bn and math.min(bn, size - 1) or size - 1
-  if last < first then
-    return nil
-  end
-  return first, last
-end
-
-local function read_file_async(path, cb)
-  uv.fs_open(path, 'r', 292, function(err, fd) -- 292 = 0444
-    if err or not fd then
-      return cb(nil, 'open')
-    end
-    uv.fs_fstat(fd, function(serr, stat)
-      if serr or not stat or stat.type ~= 'file' then
-        uv.fs_close(fd)
-        return cb(nil, 'stat')
-      end
-      if stat.size > MAX_FILE_BYTES then
-        uv.fs_close(fd)
-        return cb(nil, 'toobig')
-      end
-      uv.fs_read(fd, stat.size, 0, function(rerr, data)
-        uv.fs_close(fd)
-        if rerr or not data then
-          return cb(nil, 'read')
-        end
-        cb(data)
-      end)
-    end)
-  end)
-end
-
---- Pump fd's [first, last] byte range to sock after `head` (response head
---- including the blank line). Closes fd and sock when done or on any error.
-local function stream_body(sock, fd, first, last, head)
-  local finished = false
-  local function finish(broken)
-    if finished then
-      return
-    end
-    finished = true
-    uv.fs_close(fd, function() end)
-    if broken then
-      close_sock(sock)
-    end
-  end
-  local offset = first
-  local function pump()
-    if sock:is_closing() then
-      return finish(true)
-    end
-    local want = math.min(CHUNK_BYTES, last - offset + 1)
-    if want <= 0 then
-      finish(false)
-      close_sock(sock) -- Connection: close, and the last write has flushed
-      return
-    end
-    uv.fs_read(fd, want, offset, function(rerr, data)
-      if rerr or not data or #data == 0 then
-        return finish(true) -- truncated mid-stream (file shrank?): drop the socket
-      end
-      offset = offset + #data
-      local ok = pcall(sock.write, sock, data, function(werr)
-        if werr then
-          return finish(true)
-        end
-        pump() -- next chunk only after this one flushed: natural backpressure
-      end)
-      if not ok then
-        finish(true)
-      end
-    end)
-  end
-  local ok = pcall(sock.write, sock, head, function(werr)
-    if werr then
-      return finish(true)
-    end
-    pump()
-  end)
-  if not ok then
-    finish(true)
-  end
-end
-
---- Serve a file from disk, streamed in chunks: no whole-file buffering, byte
---- ranges so media can seek, and Last-Modified revalidation so a reload of an
---- unchanged file costs a 304 instead of a re-download.
----@param req { head_only: boolean?, range: string?, if_modified_since: string? }?
-local function serve_file(sock, path, cache_control, req)
-  req = req or {}
-  local ext = path:match('%.([%w]+)$')
-  local mime = MIME[ext and ext:lower() or ''] or 'application/octet-stream'
-  uv.fs_open(path, 'r', 292, function(err, fd) -- 292 = 0444
-    if err or not fd then
-      return respond(sock, 404)
-    end
-    uv.fs_fstat(fd, function(serr, stat)
-      if serr or not stat or stat.type ~= 'file' then
-        uv.fs_close(fd, function() end)
-        return respond(sock, 404)
-      end
-      local modified = http_date(stat.mtime.sec)
-      if req.if_modified_since == modified then
-        uv.fs_close(fd, function() end)
-        return respond(sock, 304, {
-          ['Content-Type'] = mime,
-          ['Cache-Control'] = cache_control or 'no-cache',
-          ['Last-Modified'] = modified,
-        })
-      end
-      local first, last = parse_range(req.range, stat.size)
-      if first == 'unsatisfiable' then
-        uv.fs_close(fd, function() end)
-        return respond(sock, 416, { ['Content-Range'] = 'bytes */' .. stat.size })
-      end
-      local headers = {
-        ['Content-Type'] = mime,
-        ['Cache-Control'] = cache_control or 'no-cache',
-        ['Last-Modified'] = modified,
-        ['Accept-Ranges'] = 'bytes',
-        ['Connection'] = 'close',
-      }
-      local status = 200
-      if first then
-        status = 206
-        headers['Content-Range'] = ('bytes %d-%d/%d'):format(first, last, stat.size)
-      else
-        first, last = 0, stat.size - 1
-      end
-      headers['Content-Length'] = tostring(math.max(0, last - first + 1))
-      local lines = { ('HTTP/1.1 %d %s'):format(status, REASONS[status]) }
-      for k, v in pairs(headers) do
-        lines[#lines + 1] = k .. ': ' .. v
-      end
-      lines[#lines + 1] = ''
-      lines[#lines + 1] = ''
-      local head = table.concat(lines, '\r\n')
-      if req.head_only or last < first then
-        uv.fs_close(fd, function() end)
-        return write_and_close(sock, head)
-      end
-      stream_body(sock, fd, first, last, head)
-    end)
-  end)
-end
-
---- True if `name` appears as a key in the query string (`?raw`, `?raw=1`).
-local function has_param(query, name)
-  for pair in query:gmatch('[^&;]+') do
-    if pair:match('^([^=]*)') == name then
-      return true
-    end
-  end
-  return false
-end
-
---- Reject paths that could escape the assets directory.
-local function is_confined(rel)
-  if rel:find('\0', 1, true) or rel:sub(1, 1) == '/' then
-    return false
-  end
-  for seg in rel:gmatch('[^/]+') do
-    if seg == '..' then
-      return false
-    end
-  end
-  return true
-end
-
-------------------------------------------------------------------------------
--- Served-file watchers (live image reload)
-------------------------------------------------------------------------------
-
--- Files served through /f/ get a directory-level fs watch (deduped per dir,
--- capped, torn down with the preview). When a watched file changes — or is
--- rename-replaced, which a file-level watch would lose — an `assets` SSE
--- event pushes the relative paths and the page cache-busts the matching
--- <img>/<video>/<audio> elements.
-
-local MAX_WATCH_DIRS = 32
-
-local function notify_asset(pv, rel)
-  pv.changed_assets = pv.changed_assets or {}
-  pv.changed_assets[rel] = true
-  if not pv.asset_timer then
-    pv.asset_timer = uv.new_timer()
-    if not pv.asset_timer then
-      return
-    end
-  end
-  -- Debounced: tools rewriting a file emit bursts of events.
-  pv.asset_timer:stop()
-  pv.asset_timer:start(
-    150,
-    0,
-    vim.schedule_wrap(function()
-      local paths = {}
-      for r in pairs(pv.changed_assets or {}) do
-        paths[#paths + 1] = r
-      end
-      pv.changed_assets = {}
-      if #paths > 0 and state.previews[pv.token] then
-        table.sort(paths)
-        M.broadcast(pv.token, 'assets', vim.json.encode({ paths = paths }))
-      end
-    end)
-  )
-end
-
-local function watch_file(pv, fpath, rel)
-  if not state.reload_images then
-    return
-  end
-  local dir, name = fpath:match('^(.*)/([^/]+)$')
-  if not dir or dir == '' then
-    return
-  end
-  pv.watches = pv.watches or {}
-  local w = pv.watches[dir]
-  if not w then
-    if vim.tbl_count(pv.watches) >= MAX_WATCH_DIRS then
-      return
-    end
-    local handle = uv.new_fs_event()
-    if not handle then
-      return
-    end
-    w = { handle = handle, files = {} }
-    local ok, r = pcall(handle.start, handle, dir, {}, function(werr, filename)
-      if not werr and filename and w.files[filename] then
-        notify_asset(pv, w.files[filename])
-      end
-    end)
-    if not ok or (r ~= 0 and r ~= true) then
-      pcall(handle.close, handle)
-      return
-    end
-    pv.watches[dir] = w
-  end
-  w.files[name] = rel
-end
-
-local function drop_watches(pv)
-  if pv.asset_timer then
-    pv.asset_timer:stop()
-    pv.asset_timer:close()
-    pv.asset_timer = nil
-  end
-  for _, w in pairs(pv.watches or {}) do
-    pcall(w.handle.stop, w.handle)
-    if not w.handle:is_closing() then
-      w.handle:close()
-    end
-  end
-  pv.watches = nil
-end
-
 ------------------------------------------------------------------------------
 -- Routes
 ------------------------------------------------------------------------------
@@ -475,7 +86,7 @@ local CSP = table.concat({
 local function page_shell(title, boot_json, cb)
   local function build(tpl)
     local subst = {
-      TITLE = html_escape(title),
+      TITLE = http.html_escape(title),
       THEME = state.theme,
       COLOR_SCHEME = state.theme == 'auto' and 'light dark' or state.theme,
       CSS_LINKS = css_links(state.theme),
@@ -490,7 +101,7 @@ local function page_shell(title, boot_json, cb)
   if state.template then
     return build(state.template)
   end
-  read_file_async(asset_dir .. '/index.html', function(tpl)
+  files.read(asset_dir .. '/index.html', function(tpl)
     if not tpl then
       return cb(nil)
     end
@@ -538,7 +149,7 @@ end
 --- SSE stream. Relative links keep working because `base` points the client
 --- at this file's directory within the token's file namespace.
 local function route_static_md(sock, token, rel, fpath)
-  read_file_async(fpath, function(data, err)
+  files.read(fpath, function(data, err)
     if not data then
       return respond(sock, err == 'toobig' and 413 or 404)
     end
@@ -632,7 +243,7 @@ end
 local function route_index(sock)
   local rows = {}
   for _, pv in pairs(state.previews) do
-    rows[#rows + 1] = ('<li><a href="/p/%s">%s</a></li>'):format(pv.token, html_escape(pv.title))
+    rows[#rows + 1] = ('<li><a href="/p/%s">%s</a></li>'):format(pv.token, http.html_escape(pv.title))
   end
   table.sort(rows)
   local body = table.concat({
@@ -670,8 +281,8 @@ local function handle_request(sock, head, body)
   end
   local req = {
     head_only = method == 'HEAD',
-    range = req_header(head, 'range'),
-    if_modified_since = req_header(head, 'if-modified-since'),
+    range = http.req_header(head, 'range'),
+    if_modified_since = http.req_header(head, 'if-modified-since'),
   }
 
   if path == '/' then
@@ -690,11 +301,11 @@ local function handle_request(sock, head, body)
 
   local rel = path:match('^/assets/(.+)$')
   if rel then
-    rel = percent_decode(rel)
-    if not is_confined(rel) then
+    rel = http.percent_decode(rel)
+    if not http.is_confined(rel) then
       return respond(sock, 403)
     end
-    return serve_file(sock, asset_dir .. '/' .. rel, 'public, max-age=31536000, immutable', req)
+    return files.serve(sock, asset_dir .. '/' .. rel, 'public, max-age=31536000, immutable', req)
   end
 
   local ftoken, frel = path:match('^/f/(%x+)/(.+)$')
@@ -703,21 +314,23 @@ local function handle_request(sock, head, body)
     if not pv then
       return respond(sock, 404)
     end
-    frel = percent_decode(frel):gsub('^/+', '')
+    frel = http.percent_decode(frel):gsub('^/+', '')
     -- Same confinement as /assets/: reject NUL, absolute paths, and any `..`
     -- segment so a token holder cannot traverse out of the file's directory.
-    if not is_confined(frel) then
+    if not http.is_confined(frel) then
       return respond(sock, 403)
     end
     local fpath = pv.dir .. '/' .. frel
     -- Markdown files render as a page (GitHub-style), so relative .md links
     -- are followable. `?raw` serves the bytes instead.
     local low = frel:lower()
-    if (low:match('%.md$') or low:match('%.markdown$')) and not has_param(query, 'raw') then
+    if (low:match('%.md$') or low:match('%.markdown$')) and not http.has_param(query, 'raw') then
       return route_static_md(sock, ftoken, frel, fpath)
     end
-    watch_file(pv, fpath, frel)
-    return serve_file(sock, fpath, nil, req)
+    if state.reload_images then
+      watch.add(ftoken, fpath, frel)
+    end
+    return files.serve(sock, fpath, nil, req)
   end
 
   return respond(sock, 404)
@@ -870,7 +483,7 @@ function M.close_preview(token, notify)
     return
   end
   state.previews[token] = nil
-  drop_watches(pv)
+  watch.drop(token)
   for sock in pairs(pv.clients) do
     if notify and not sock:is_closing() then
       local ok = pcall(sock.write, sock, sse_frame('close', '{}'), function()

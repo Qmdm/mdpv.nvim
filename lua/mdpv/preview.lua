@@ -18,9 +18,6 @@ local M = {}
 ---@field on_sync fun(line: integer)? browser->editor cursor move (scroll_sync = 'both')
 ---@field on_toggle fun(line: integer, checked: boolean)? browser->editor task checkbox flip
 ---@field augroup integer
----@field watches table<string, { handle: uv.uv_fs_event_t, files: table<string, string> }>? dir watchers for served files (server-managed)
----@field changed_assets table<string, true>? rels pending an `assets` event (server-managed)
----@field asset_timer uv.uv_timer_t? asset-event debounce (server-managed)
 
 M.previews = {} ---@type table<integer, mdpv.Preview> bufnr -> preview
 
@@ -104,6 +101,113 @@ local function on_change(pv, debounce_ms)
   )
 end
 
+--- Content tracking via buffer attach: on_lines fires for every mutation
+--- (typing, :s, undo, LSP edits, API calls), unlike TextChanged autocmds.
+--- The callback runs under textlock, so it only re-arms the uv timer.
+local function track_changes(pv, config)
+  local bufnr = pv.bufnr
+  vim.api.nvim_buf_attach(bufnr, false, {
+    on_lines = function()
+      if not M.previews[bufnr] then
+        return true -- preview closed: detach
+      end
+      on_change(pv, config.debounce)
+    end,
+    on_reload = function()
+      if M.previews[bufnr] then
+        on_change(pv, config.debounce)
+      end
+    end,
+  })
+end
+
+--- Scroll sync: stream the cursor line so the page can follow it. Cursor
+--- position (not topline) is the anchor — it is what the user is editing.
+local function setup_scroll_sync(pv, config)
+  local bufnr = pv.bufnr
+  pv.scroll_timer = assert(vim.uv.new_timer())
+  local last_line = 0
+  vim.api.nvim_create_autocmd({ 'CursorMoved', 'CursorMovedI' }, {
+    group = pv.augroup,
+    buffer = bufnr,
+    callback = function()
+      if next(pv.clients) == nil then
+        return -- no browser attached: nothing to scroll
+      end
+      local line = vim.api.nvim_win_get_cursor(0)[1]
+      if line == last_line then
+        return -- column-only movement (or a browser-initiated move): nothing to sync
+      end
+      last_line = line
+      pv.scroll_timer:stop()
+      pv.scroll_timer:start(
+        80,
+        0,
+        vim.schedule_wrap(function()
+          if M.previews[bufnr] then
+            server.broadcast(pv.token, 'scroll', vim.json.encode({ line = line }))
+          end
+        end)
+      )
+    end,
+  })
+  -- 'both': the page POSTs a line when the user scrolls it; move the cursor
+  -- there. Setting last_line first suppresses the echo broadcast the
+  -- resulting CursorMoved would otherwise trigger.
+  if config.scroll_sync == 'both' then
+    pv.on_sync = function(line)
+      if not (M.previews[bufnr] and vim.api.nvim_buf_is_valid(bufnr)) then
+        return
+      end
+      local wins = vim.fn.win_findbuf(bufnr)
+      if #wins == 0 then
+        return
+      end
+      line = math.max(1, math.min(line, vim.api.nvim_buf_line_count(bufnr)))
+      last_line = line
+      vim.api.nvim_win_set_cursor(wins[1], { line, 0 })
+    end
+  end
+end
+
+--- Task-list checkboxes clicked in the page POST their new state; flip the
+--- [ ]/[x] on that source line, provided it still is a task item. The buffer
+--- change then streams back through the normal debounced update.
+local function setup_checkbox_toggle(pv)
+  local bufnr = pv.bufnr
+  pv.on_toggle = function(line, checked)
+    if not (M.previews[bufnr] and vim.api.nvim_buf_is_valid(bufnr) and vim.bo[bufnr].modifiable) then
+      return
+    end
+    if line < 1 or line > vim.api.nvim_buf_line_count(bufnr) then
+      return
+    end
+    local text = vim.api.nvim_buf_get_lines(bufnr, line - 1, line, false)[1]
+    -- List marker ([-*+] or "1."/"1)"), optionally inside blockquote/callout
+    -- '>' prefixes, followed by the [ ]/[x] state box.
+    local marker = text:match('^([>%s]*[-*+]%s+%[)[ xX]%]') or text:match('^([>%s]*%d+[.%)]%s+%[)[ xX]%]')
+    if not marker then
+      return
+    end
+    vim.api.nvim_buf_set_text(bufnr, line - 1, #marker, line - 1, #marker + 1, { checked and 'x' or ' ' })
+  end
+end
+
+local function setup_auto_close(pv, config)
+  local bufnr = pv.bufnr
+  vim.api.nvim_create_autocmd({ 'BufUnload', 'BufWipeout' }, {
+    group = pv.augroup,
+    buffer = bufnr,
+    once = true,
+    callback = function()
+      -- Autocmd fires mid-unload; defer teardown out of the critical path.
+      vim.schedule(function()
+        M.close(bufnr, config)
+      end)
+    end,
+  })
+end
+
 ---@param bufnr integer
 ---@param config table plugin config (see mdpv/init.lua defaults)
 ---@return string? url, string? err
@@ -128,25 +232,9 @@ function M.open(bufnr, config)
     timer = assert(vim.uv.new_timer()),
   }
   pv.payload = make_payload(pv, config)
-
-  -- Content tracking via buffer attach: on_lines fires for every mutation
-  -- (typing, :s, undo, LSP edits, API calls), unlike TextChanged autocmds.
-  -- The callback runs under textlock, so it only re-arms the uv timer.
-  vim.api.nvim_buf_attach(bufnr, false, {
-    on_lines = function()
-      if not M.previews[bufnr] then
-        return true -- preview closed: detach
-      end
-      on_change(pv, config.debounce)
-    end,
-    on_reload = function()
-      if M.previews[bufnr] then
-        on_change(pv, config.debounce)
-      end
-    end,
-  })
-
   pv.augroup = vim.api.nvim_create_augroup('mdpv.' .. bufnr, { clear = true })
+
+  track_changes(pv, config)
   vim.api.nvim_create_autocmd('BufFilePost', {
     group = pv.augroup,
     buffer = bufnr,
@@ -155,84 +243,12 @@ function M.open(bufnr, config)
       on_change(pv, config.debounce)
     end,
   })
-  -- Scroll sync: stream the cursor line so the page can follow it. Cursor
-  -- position (not topline) is the anchor — it is what the user is editing.
   if config.scroll_sync ~= false then
-    pv.scroll_timer = assert(vim.uv.new_timer())
-    local last_line = 0
-    vim.api.nvim_create_autocmd({ 'CursorMoved', 'CursorMovedI' }, {
-      group = pv.augroup,
-      buffer = bufnr,
-      callback = function()
-        if next(pv.clients) == nil then
-          return -- no browser attached: nothing to scroll
-        end
-        local line = vim.api.nvim_win_get_cursor(0)[1]
-        if line == last_line then
-          return -- column-only movement (or a browser-initiated move): nothing to sync
-        end
-        last_line = line
-        pv.scroll_timer:stop()
-        pv.scroll_timer:start(
-          80,
-          0,
-          vim.schedule_wrap(function()
-            if M.previews[bufnr] then
-              server.broadcast(pv.token, 'scroll', vim.json.encode({ line = line }))
-            end
-          end)
-        )
-      end,
-    })
-    -- 'both': the page POSTs a line when the user scrolls it; move the cursor
-    -- there. Setting last_line first suppresses the echo broadcast the
-    -- resulting CursorMoved would otherwise trigger.
-    if config.scroll_sync == 'both' then
-      pv.on_sync = function(line)
-        if not (M.previews[bufnr] and vim.api.nvim_buf_is_valid(bufnr)) then
-          return
-        end
-        local wins = vim.fn.win_findbuf(bufnr)
-        if #wins == 0 then
-          return
-        end
-        line = math.max(1, math.min(line, vim.api.nvim_buf_line_count(bufnr)))
-        last_line = line
-        vim.api.nvim_win_set_cursor(wins[1], { line, 0 })
-      end
-    end
+    setup_scroll_sync(pv, config)
   end
-  -- Task-list checkboxes clicked in the page POST their new state; flip the
-  -- [ ]/[x] on that source line, provided it still is a task item. The buffer
-  -- change then streams back through the normal debounced update.
-  pv.on_toggle = function(line, checked)
-    if not (M.previews[bufnr] and vim.api.nvim_buf_is_valid(bufnr) and vim.bo[bufnr].modifiable) then
-      return
-    end
-    if line < 1 or line > vim.api.nvim_buf_line_count(bufnr) then
-      return
-    end
-    local text = vim.api.nvim_buf_get_lines(bufnr, line - 1, line, false)[1]
-    -- List marker ([-*+] or "1."/"1)"), optionally inside blockquote/callout
-    -- '>' prefixes, followed by the [ ]/[x] state box.
-    local marker = text:match('^([>%s]*[-*+]%s+%[)[ xX]%]') or text:match('^([>%s]*%d+[.%)]%s+%[)[ xX]%]')
-    if not marker then
-      return
-    end
-    vim.api.nvim_buf_set_text(bufnr, line - 1, #marker, line - 1, #marker + 1, { checked and 'x' or ' ' })
-  end
+  setup_checkbox_toggle(pv)
   if config.auto_close then
-    vim.api.nvim_create_autocmd({ 'BufUnload', 'BufWipeout' }, {
-      group = pv.augroup,
-      buffer = bufnr,
-      once = true,
-      callback = function()
-        -- Autocmd fires mid-unload; defer teardown out of the critical path.
-        vim.schedule(function()
-          M.close(bufnr, config)
-        end)
-      end,
-    })
+    setup_auto_close(pv, config)
   end
 
   server.register(pv)

@@ -50,13 +50,16 @@ Lessons taken:
 ```
 lua/mdpv/init.lua      config, :Preview command, public API
 lua/mdpv/preview.lua   per-buffer lifecycle: token, buf_attach, debounce, teardown
-lua/mdpv/server.lua    vim.uv TCP server: HTTP parsing, routes, SSE, static files
+lua/mdpv/server.lua    vim.uv TCP server: request parsing, routes, SSE streams
+lua/mdpv/http.lua      wire-level helpers: reasons/MIME, respond, SSE framing
+lua/mdpv/files.lua     file responses: async reads, chunked streaming, ranges, 304
+lua/mdpv/watch.lua     served-file watchers behind live image reload (per token)
 assets/index.html      page shell (template: {{TITLE}} {{BOOT}} {{CSS_LINKS}} …)
 assets/app.js          browser renderer (markdown-it → DOMPurify → GitHub markup)
 assets/mdpv.css        page chrome (floating menu, container, non-GitHub
                        callout kinds) in Primer tokens
 assets/vendor/         pinned deps (scripts/vendor.sh re-downloads them)
-tests/                 e2e.lua · fidelity.lua · sync.lua (+ cdp.js driver)
+tests/                 e2e.lua · fidelity.lua · sync.lua · interact.lua (+ cdp.js)
 ```
 
 Lua is `stylua`-formatted (`stylua.toml`); vendored frontend assets are the
@@ -224,7 +227,8 @@ morphdom is unavailable.
 
 **Live image reload via directory watches.** Every file served through
 `/f/<token>/` registers a `uv_fs_event` watch on its *directory* (deduped,
-capped at 32 dirs per preview, torn down with it) — a file-level watch would
+capped at 32 dirs per preview, torn down with it; registry owned by
+`mdpv.watch`, keyed by token) — a file-level watch would
 go stale when tools rename-replace on save. Changes debounce 150 ms into one
 `assets` SSE event listing the relative paths; the page cache-busts the
 matching `<img>`/`<video>`/`<audio>` elements in place. Combined with
