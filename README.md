@@ -50,7 +50,8 @@ styled with GitHub's actual CSS.
   Click to jump, drag it to any corner.
 - One floating button (drag it to any corner too — the outline yields if they
   meet) opens the page menu: sync toggles, outline, full width, theme
-  (auto/light/dark) — all persisted per browser.
+  (auto/light/dark) — every choice, corners included, is remembered across
+  sessions.
 - A copy button on every code block; video and audio that actually seek
   (byte-range serving); instant first paint straight from the page shell.
 - Relative links resolve like on GitHub — a linked `.md` renders as a page

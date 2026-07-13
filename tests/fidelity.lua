@@ -9,6 +9,10 @@ local script = debug.getinfo(1, 'S').source:sub(2)
 local root = vim.fs.dirname(vim.fs.dirname(vim.fn.fnamemodify(script, ':p')))
 vim.opt.runtimepath:prepend(root)
 
+-- Page preferences persist to stdpath('state'); point that at a throwaway
+-- directory so the user's real prefs can't steer the DOM checks below.
+vim.env.XDG_STATE_HOME = vim.fn.tempname()
+
 local chrome = os.getenv('MDPV_CHROME') or 'chromium'
 if vim.fn.executable(chrome) == 0 then
   print('SKIP: no chromium found (set MDPV_CHROME)')
@@ -195,6 +199,9 @@ check(
   'theme options rendered as a segmented control',
   dom:find('data%-theme%-opt="auto"') ~= nil and dom:find('data%-theme%-opt="dark"') ~= nil
 )
+
+-- Page preferences ship in their own data block (empty here: fresh state dir)
+check('prefs data block shipped', dom:find('<script type="application/json" id="mdpv%-prefs">') ~= nil)
 
 -- Scroll sync + diffing plumbing
 check('blocks carry data-source-line', content:find('data-source-line="', 1, true) ~= nil)

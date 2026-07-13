@@ -27,6 +27,21 @@
   const $syncBack = document.getElementById('syncback-toggle');
   const $toc = document.getElementById('mdpv-toc');
 
+  // Page preferences (theme, outline, sync switches, corners) read and write
+  // localStorage — but localStorage is per-origin, and the default ephemeral
+  // port makes every Neovim session a new origin. The editor keeps the
+  // authoritative copy in a state file and ships it in the shell; it seeds
+  // any key this origin hasn't set yet (so an origin's own choices still
+  // win), and every change is POSTed back for the next session.
+  const PREFS = JSON.parse(document.getElementById('mdpv-prefs').textContent || '{}');
+  for (const [key, value] of Object.entries(PREFS)) {
+    if (localStorage.getItem(key) === null) localStorage.setItem(key, value);
+  }
+  function setPref(key, value) {
+    localStorage.setItem(key, value);
+    fetch(`/prefs/${BOOT.token}`, { method: 'POST', body: JSON.stringify({ [key]: value }) }).catch(() => {});
+  }
+
   // Primer octicons: GitHub's own glyphs for its five alerts, plus stand-ins
   // for the icons of Obsidian's remaining callout types.
   const svg = (cls, ...paths) =>
@@ -861,8 +876,9 @@
   // --- Floating menu ---------------------------------------------------------
   // A Next.js-devtools-style round button opens a small grouped panel: sync
   // toggles (live previews only), outline, full width, theme, go to top.
-  // Drag it to park it in any corner; the corner persists per browser. The
-  // outline panel (#mdpv-toc) floats and corner-parks the same way.
+  // Drag it to park it in any corner; the corner persists (setPref) like
+  // every other choice here. The outline panel (#mdpv-toc) floats and
+  // corner-parks the same way.
 
   function toggleMenu(open) {
     const show = open ?? $fabMenu.hidden;
@@ -926,7 +942,7 @@
       // Snap to the nearest corner, glide there, then hand anchoring back to CSS.
       const corner = (ev.clientY < window.innerHeight / 2 ? 't' : 'b')
         + (ev.clientX < window.innerWidth / 2 ? 'l' : 'r');
-      localStorage.setItem(storageKey, corner);
+      setPref(storageKey, corner);
       const m = opts.margins ? opts.margins(corner) : { x: FAB_MARGIN, y: FAB_MARGIN };
       el.classList.add('snapping');
       el.style.left = `${corner[1] === 'l' ? m.x : window.innerWidth - el.offsetWidth - m.x}px`;
@@ -967,8 +983,8 @@
   updateEvade();
 
   // Theme: the server renders the configured theme; the segmented control
-  // picks auto/light/dark per browser (persisted in localStorage), swapping
-  // in the same stylesheet pair the server would have injected.
+  // picks auto/light/dark (persisted via setPref), swapping in the same
+  // stylesheet pair the server would have injected.
   const THEME_CSS = {
     auto: ['github-markdown.css', 'hljs-github-auto.css'],
     light: ['github-markdown-light.css', 'github.min.css'],
@@ -1001,7 +1017,7 @@
     const btn = ev.target.closest('button');
     const theme = btn && btn.dataset.themeOpt;
     if (!theme || !THEME_CSS[theme] || theme === document.documentElement.dataset.theme) return;
-    localStorage.setItem('mdpv-theme', theme);
+    setPref('mdpv-theme', theme);
     applyTheme(theme);
   });
 
@@ -1016,7 +1032,7 @@
   paintWide();
   $width.addEventListener('click', () => {
     wide = !wide;
-    localStorage.setItem('mdpv-wide', wide ? '1' : '0');
+    setPref('mdpv-wide', wide ? '1' : '0');
     paintWide();
   });
 
@@ -1053,7 +1069,7 @@
 
   function setOutlineOn(on) {
     outlineOn = on;
-    localStorage.setItem('mdpv-outline', on ? '1' : '0');
+    setPref('mdpv-outline', on ? '1' : '0');
     paintOutline();
   }
 
@@ -1212,7 +1228,7 @@
     paintSync();
     $follow.addEventListener('click', () => {
       follow = !follow;
-      localStorage.setItem('mdpv-follow', follow ? '1' : '0');
+      setPref('mdpv-follow', follow ? '1' : '0');
       paintSync();
       if (!follow) {
         cursorLine = 0;
@@ -1221,7 +1237,7 @@
     });
     $syncBack.addEventListener('click', () => {
       syncBack = !syncBack;
-      localStorage.setItem('mdpv-sync-back', syncBack ? '1' : '0');
+      setPref('mdpv-sync-back', syncBack ? '1' : '0');
       paintSync();
     });
   }

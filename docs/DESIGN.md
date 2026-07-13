@@ -74,6 +74,7 @@ only non-authored files.
 | `GET /events/<token>` | SSE stream: `update` events (JSON `{token,title,md,features}`), `scroll` events (cursor line), `assets` events (served files changed on disk), `close` event, 30 s heartbeat comments |
 | `GET /f/<token>/<path>` | files resolved against the buffer's directory, streamed with byte ranges + `Last-Modified`/304 revalidation; `.md` files render as static pages (`?raw` for bytes) |
 | `POST /sync/<token>` | browser → editor: JSON `{line}` moves the cursor (sent while the page's move-cursor-on-scroll switch is on); JSON `{toggle: {line, checked}}` flips a task checkbox |
+| `POST /prefs/<token>` | browser → editor: JSON object of page-preference changes (theme, outline, sync switches, corners), whitelisted and persisted to `stdpath("state")/mdpv-prefs.json` |
 | `GET /assets/<path>` | plugin frontend, `Cache-Control: immutable` + per-session `?v=` buster |
 
 ### Data flow
@@ -200,8 +201,8 @@ cursor gets a gutter marker (`.mdpv-cursor`, re-applied per render since the
 diff strips it), the outline highlights the enclosing heading, and a cursor
 parked on a heading line mirrors its slug into the URL hash via
 `replaceState` (deep-linkable, no scroll, no history spam). The follow
-toggle turns all of it off per browser (persisted in localStorage);
-`scroll_sync = false` removes the menu's Sync group entirely.
+toggle turns all of it off (a persisted menu choice); `scroll_sync = false`
+removes the menu's Sync group entirely.
 
 **One floating button instead of page chrome.** The page itself stays
 chrome-free, like a rendered file on GitHub; everything interactive lives
@@ -209,7 +210,21 @@ behind a Next.js-devtools-style round button that can be dragged to any
 corner. Its menu carries the connection dot and two labeled groups: Sync
 (follow cursor, move cursor on scroll) and View (outline, full width, and a
 segmented auto/light/dark theme picker), plus go-to-top — every choice
-persisted per browser in localStorage.
+persisted.
+
+**Preferences outlive the origin.** Menu choices (and both corners) write
+localStorage, but the default ephemeral port makes every Neovim session a
+new origin, so localStorage alone forgets everything between sessions. The
+editor keeps the authoritative copy: the page `POST`s `/prefs/<token>` on
+every change (fire-and-forget, like `/sync`), the server whitelists keys
+*and* values — the state file is user-editable and its contents land in the
+page, so junk is dropped, never shipped — persists the merged set to
+`stdpath("state")/mdpv-prefs.json`, and ships the current set in a second
+JSON data block in the shell. The page seeds only the keys its origin has
+never set, so an origin's own localStorage still wins (on a fixed port, two
+browsers can keep diverging choices). Tests point `XDG_STATE_HOME` at a
+throwaway directory so the user's real prefs can't steer assertions — and
+so test runs never overwrite them.
 
 **The outline is a rail that expands on hover** (the pattern Notion's
 floating outline established). The document outline (rebuilt per render from
@@ -232,8 +247,8 @@ fading toward muted) over a 12px indent per level — guide hairlines were
 tried and dropped as noise — and scroll shadows (local-attachment
 background layers) mark a clipped edge as scrollable.
 Both states are one element — only its dress changes, so the card surface
-fades over the rail. On by default and toggled from the menu (persisted
-per browser), corner-parked by the same drag-and-snap code as the button,
+fades over the rail. On by default and toggled from the menu (a persisted
+choice), corner-parked by the same drag-and-snap code as the button,
 and the rail itself is the drag handle; the drag listens for moves on `window` with no pointer capture,
 because capturing would retarget the tail click away from the anchor under
 it and break click-to-jump (a handle-scoped listener would also lose fast
@@ -249,8 +264,8 @@ first window showing the buffer. Two guards kill the echo: the page ignores
 scroll events for 1.2 s after its own programmatic smooth-scroll, and the
 editor records a browser-applied line as "already broadcast" so the resulting
 `CursorMoved` stays silent. A page scroll yanking the cursor mid-edit is a
-taste decision, so the direction is a per-browser switch in the menu ("Move
-cursor on scroll"), off unless `scroll_sync = 'both'` makes it the default;
+taste decision, so the direction is a switch in the menu ("Move cursor on
+scroll"), off unless `scroll_sync = 'both'` makes it the default;
 the editor-side handler is registered either way, so flipping the switch
 needs no restart.
 
@@ -348,23 +363,26 @@ here to bound traversal against.
 
 ## 6. Testing
 
-- `tests/e2e.lua` (87 checks): real Neovim + curl against the live server —
+- `tests/e2e.lua` (96 checks): real Neovim + curl against the live server —
   routes, headers, CSP, `..` traversal rejection on both `/assets/` and `/f/`,
   byte ranges (206/416, suffix + open-ended + multi-range degradation),
   `If-Modified-Since` → 304, HEAD, SSE initial + live-edit push,
   scroll events, `POST /sync` cursor moves (incl. clamping, bad payloads,
   and acceptance under plain `scroll_sync = true`), checkbox-toggle round
-  trip (incl. non-task lines left alone), the `assets` event when a served
-  image changes on disk, KaTeX macros in the feature flags, static `.md`
-  pages + `?raw`, multi-preview isolation, re-open reuse, filetype guard,
-  auto-close on wipeout, auto-stop, restart, `:Preview` command surface.
-- `tests/fidelity.lua` (65 checks): headless Chromium `--dump-dom` of a live
+  trip (incl. non-task lines left alone), `POST /prefs` (persisted to the
+  state file, shipped in the shell, junk keys/values dropped, surviving a
+  server restart), the `assets` event when a served image changes on disk,
+  KaTeX macros in the feature flags, static `.md` pages + `?raw`,
+  multi-preview isolation, re-open reuse, filetype guard, auto-close on
+  wipeout, auto-stop, restart, `:Preview` command surface.
+- `tests/fidelity.lua` (66 checks): headless Chromium `--dump-dom` of a live
   preview asserting GitHub markup (alert divs + octicons, Obsidian callouts —
   extra types, aliases, custom titles, `<details>` folding, nesting —
   task-list classes with enabled checkboxes, wikilink resolution (pages,
   aliases, headings, image embeds), slug dedup, footnote shape, hljs spans
   (lazy-loaded), copy buttons, outline items + default visibility, sync and
-  theme menu controls, KaTeX inline/display typesetting, Mermaid SVG +
+  theme menu controls, the prefs data block, KaTeX inline/display
+  typesetting, Mermaid SVG +
   pan/zoom controls, emoji expansion, frontmatter table incl. nested maps,
   source-line mapping, morphdom keys, sanitization, `/f/` URL rewriting).
 - `tests/sync.lua` (7 checks): drives headless Chromium over the DevTools

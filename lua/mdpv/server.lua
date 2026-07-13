@@ -9,6 +9,8 @@
 --- Plus shared routes:
 ---   GET /                 index of active previews
 ---   GET /assets/<path>    plugin frontend assets (immutable-cached)
+---   POST /sync/<token>    browser -> editor messages (cursor line, checkbox)
+---   POST /prefs/<token>   browser -> editor page-preference changes
 ---
 --- This module owns routing, the SSE streams, and the connection lifecycle;
 --- wire-level helpers live in mdpv.http, file responses in mdpv.files, and
@@ -44,6 +46,7 @@ local state = {
   features = { math = true, mermaid = true, emoji = true, wikilinks = true },
   template = nil, ---@type string? assets/index.html, read once per server run
   reload_images = true, -- watch served files and push `assets` events on change
+  prefs = {}, ---@type table<string, string> page preferences, mirrored to disk
 }
 
 local plugin_root = vim.fn.fnamemodify(debug.getinfo(1, 'S').source:sub(2), ':h:h:h')
@@ -71,6 +74,77 @@ local function css_links(theme)
 end
 
 ------------------------------------------------------------------------------
+-- Page preferences
+------------------------------------------------------------------------------
+-- The page's choices (theme, outline, sync switches, corners) live in
+-- localStorage, but localStorage is per-origin and the default ephemeral port
+-- makes every Neovim session a new origin. The editor keeps the authoritative
+-- copy in a state file: pages POST changes here, and the current set ships in
+-- the page shell to seed a fresh origin with the last session's choices.
+
+-- Key -> allowed values. The file is user-editable and the values land in the
+-- page, so anything outside this table is dropped, never shipped.
+local BOOL_PREF = { ['0'] = true, ['1'] = true }
+local CORNER_PREF = { tl = true, tr = true, bl = true, br = true }
+local PREF_VALUES = {
+  ['mdpv-theme'] = { auto = true, light = true, dark = true },
+  ['mdpv-wide'] = BOOL_PREF,
+  ['mdpv-outline'] = BOOL_PREF,
+  ['mdpv-follow'] = BOOL_PREF,
+  ['mdpv-sync-back'] = BOOL_PREF,
+  ['mdpv-fab-corner'] = CORNER_PREF,
+  ['mdpv-toc-corner'] = CORNER_PREF,
+}
+
+-- Main loop only (stdpath), like everything below that touches the file.
+local function prefs_path()
+  return vim.fn.stdpath('state') .. '/mdpv-prefs.json'
+end
+
+---@return table<string, string> only the known keys of `t` with known values
+local function sanitize_prefs(t)
+  local out = {}
+  if type(t) == 'table' then
+    for key, allowed in pairs(PREF_VALUES) do
+      local v = t[key]
+      if type(v) == 'string' and allowed[v] then
+        out[key] = v
+      end
+    end
+  end
+  return out
+end
+
+local function load_prefs()
+  local f = io.open(prefs_path(), 'r')
+  if not f then
+    return {}
+  end
+  local data = f:read('*a')
+  f:close()
+  local ok, t = pcall(vim.json.decode, data)
+  return sanitize_prefs(ok and t)
+end
+
+local function save_prefs()
+  local path = prefs_path()
+  local f = io.open(path, 'w')
+  if not f then
+    vim.fn.mkdir(vim.fn.fnamemodify(path, ':h'), 'p')
+    f = io.open(path, 'w')
+    if not f then
+      return -- unwritable state dir: prefs just stay session-local
+    end
+  end
+  f:write(vim.json.encode(next(state.prefs) and state.prefs or vim.empty_dict()))
+  f:close()
+end
+
+local function prefs_json()
+  return vim.json.encode(next(state.prefs) and state.prefs or vim.empty_dict())
+end
+
+------------------------------------------------------------------------------
 -- Routes
 ------------------------------------------------------------------------------
 
@@ -95,6 +169,7 @@ local function page_shell(title, boot_json, cb)
       -- would violate the page's own CSP). Escaping '<' as unicode prevents
       -- '</script>' breakout and is transparent to JSON.parse.
       BOOT = (boot_json:gsub('<', '\\u003c')),
+      PREFS = (prefs_json():gsub('<', '\\u003c')),
     }
     cb((tpl:gsub('{{([%u_]+)}}', subst)))
   end
@@ -240,6 +315,33 @@ local function route_sync(sock, token, body)
   respond(sock, 204)
 end
 
+--- Browser -> editor preference changes, POSTed to /prefs/<token> as a JSON
+--- object of localStorage key -> value pairs. Unknown keys and values are
+--- dropped; a real change is merged and written through to the state file.
+--- Fire-and-forget like /sync: always 204, bad payloads are ignored.
+local function route_prefs(sock, token, body)
+  if not state.previews[token] then
+    return respond(sock, 404)
+  end
+  vim.schedule(function()
+    local ok, msg = pcall(vim.json.decode, body or '')
+    if not ok then
+      return
+    end
+    local changed = false
+    for key, value in pairs(sanitize_prefs(msg)) do
+      if state.prefs[key] ~= value then
+        state.prefs[key] = value
+        changed = true
+      end
+    end
+    if changed then
+      save_prefs()
+    end
+  end)
+  respond(sock, 204)
+end
+
 local function route_index(sock)
   local rows = {}
   for _, pv in pairs(state.previews) do
@@ -273,6 +375,10 @@ local function handle_request(sock, head, body)
     local stoken = path:match('^/sync/(%x+)$')
     if stoken then
       return route_sync(sock, stoken, body)
+    end
+    stoken = path:match('^/prefs/(%x+)$')
+    if stoken then
+      return route_prefs(sock, stoken, body)
     end
     return respond(sock, 405, { Allow = 'GET, HEAD' })
   end
@@ -423,6 +529,7 @@ function M.start(config)
     wikilinks = config.wikilinks ~= false,
   }
   state.reload_images = config.reload_images ~= false
+  state.prefs = load_prefs() -- M.start runs on the main loop (user command)
   local tcp = uv.new_tcp()
   if not tcp then
     return false, 'could not create TCP handle'

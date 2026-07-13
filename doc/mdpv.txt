@@ -102,8 +102,8 @@ interpolating between blocks for smooth tracking. The block under the cursor
 carries a subtle accent bar in the left gutter, the outline (|mdpv-outline|)
 highlights the enclosing heading, and when the cursor sits on a heading line
 the page's URL hash follows it — copy the address bar for a deep link.
-"Follow cursor" in the floating menu toggles all of this per browser
-(persisted in localStorage).
+"Follow cursor" in the floating menu toggles all of this (remembered like
+every menu choice, see |mdpv-menu|).
 
 The reverse direction — scrolling the page moves the Neovim cursor to the
 line under the upper third of the viewport — is the menu's "Move cursor on
@@ -171,8 +171,13 @@ THE FLOATING MENU                                              *mdpv-menu*
 A floating button (bottom right by default; drag it to any corner) shows
 the connection state and opens the page menu. Sync (live previews only):
 follow cursor, move cursor on scroll. View: outline, full width, theme
-(auto/light/dark). Plus go to top. Every choice and the button's corner
-persist per browser in localStorage.
+(auto/light/dark). Plus go to top.
+
+Every choice — corners included — is remembered across sessions: the page
+keeps it in the browser and mirrors it to a small state file on the editor
+side (`stdpath("state")/mdpv-prefs.json`), so the next session's page picks
+up your last settings even though the server sits on a new port by then
+(which browsers treat as a different site).
 
 THE OUTLINE                                                 *mdpv-outline*
 
@@ -181,9 +186,9 @@ dashes — one per heading, longer for higher levels, with the section you
 are reading accented (scroll-spied). Hovering the rail expands it in place
 into the full heading list, where levels read by weight and shade (h1
 heaviest) and indentation. Clicking an entry jumps to it, and moving the
-pointer away collapses the list back to the rail. On by default; switch it off (and back on) from the menu, per
-browser. Drag it to park it in any corner; when it meets the menu button
-in a corner, it steps aside so the two never overlap.
+pointer away collapses the list back to the rail. On by default; switch it
+off (and back on) from the menu. Drag it to park it in any corner; when it
+meets the menu button in a corner, it steps aside so the two never overlap.
 
 SECURITY                                                   *mdpv-security*
 

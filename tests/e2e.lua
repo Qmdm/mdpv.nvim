@@ -9,6 +9,10 @@ local script = debug.getinfo(1, 'S').source:sub(2)
 local root = vim.fs.dirname(vim.fs.dirname(vim.fn.fnamemodify(script, ':p')))
 vim.opt.runtimepath:prepend(root)
 
+-- Page preferences persist to stdpath('state'); point that at a throwaway
+-- directory so tests neither read nor overwrite the user's real prefs.
+vim.env.XDG_STATE_HOME = vim.fn.tempname()
+
 local failures, passes = {}, 0
 local function check(name, cond, detail)
   if cond then
@@ -339,6 +343,51 @@ post_toggle(1, true)
 vim.wait(300)
 check('non-task line is left alone', vim.api.nvim_buf_get_lines(buf1, 0, 1, false)[1] == before_toggle)
 
+-- --- Page preferences: POSTed by the page, persisted, shipped in the shell ---
+
+local function post_prefs(tok, json)
+  return http({
+    '-o',
+    '/dev/null',
+    '-w',
+    '%{http_code}',
+    '--max-time',
+    '5',
+    '-X',
+    'POST',
+    '-d',
+    json,
+    base .. '/prefs/' .. tok,
+  })
+end
+pres = post_prefs(token, '{"mdpv-theme":"dark","mdpv-wide":"1"}')
+check('POST /prefs/<token> is 204', pres.stdout == '204', pres.stdout)
+vim.wait(300)
+status, body = get(url)
+check(
+  'page ships the posted prefs',
+  body:find('"mdpv-theme":"dark"', 1, true) ~= nil and body:find('"mdpv-wide":"1"', 1, true) ~= nil
+)
+local prefs_file = vim.fn.stdpath('state') .. '/mdpv-prefs.json'
+check('prefs written to the state file', vim.fn.filereadable(prefs_file) == 1, prefs_file)
+-- Junk never reaches the file or the page: unknown keys, unknown values, and
+-- non-string values are dropped; the valid key in the same POST still lands.
+pres = post_prefs(token, '{"mdpv-theme":"neon","evil":"x","mdpv-outline":true,"mdpv-fab-corner":"tl"}')
+check('junk-pref POST still 204', pres.stdout == '204', pres.stdout)
+vim.wait(300)
+status, body = get(url)
+check('valid pref in a mixed POST lands', body:find('"mdpv-fab-corner":"tl"', 1, true) ~= nil)
+check(
+  'unknown keys and values dropped',
+  body:find('"mdpv-theme":"dark"', 1, true) ~= nil
+    and body:find('neon', 1, true) == nil
+    and body:find('evil', 1, true) == nil
+)
+pres = post_prefs(('0'):rep(32), '{"mdpv-theme":"light"}')
+check('POST /prefs unknown token is 404', pres.stdout == '404', pres.stdout)
+pres = post_prefs(token, 'not json')
+check('malformed prefs body ignored (204)', pres.stdout == '204', pres.stdout)
+
 -- --- Live asset reload: a served file changing pushes an `assets` event ------
 
 local watch_dir = vim.fn.tempname()
@@ -440,6 +489,9 @@ check('server restarts on demand', url3 ~= nil)
 local s3, body3 = get(url3)
 check('restarted preview page is 200', s3 == 200, s3)
 check('math macros ship in the boot payload', body3:find('mathbb', 1, true) ~= nil)
+-- The page prefs POSTed earlier came back from the state file: this is the
+-- cross-session path (a real restart also means a new port = a fresh origin).
+check('prefs survive a server restart', body3:find('"mdpv-theme":"dark"', 1, true) ~= nil)
 
 -- Reverse sync stays wired under the default scroll_sync = true: the page's
 -- "move cursor on scroll" switch decides whether lines are POSTed, so the

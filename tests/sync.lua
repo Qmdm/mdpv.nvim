@@ -12,6 +12,10 @@ local script = debug.getinfo(1, 'S').source:sub(2)
 local root = vim.fs.dirname(vim.fs.dirname(vim.fn.fnamemodify(script, ':p')))
 vim.opt.runtimepath:prepend(root)
 
+-- Page preferences persist to stdpath('state'); point that at a throwaway
+-- directory so the user's real prefs can't steer the page under test.
+vim.env.XDG_STATE_HOME = vim.fn.tempname()
+
 local chrome = os.getenv('MDPV_CHROME') or 'chromium'
 if vim.fn.executable(chrome) == 0 then
   print('SKIP: no chromium found (set MDPV_CHROME)')
