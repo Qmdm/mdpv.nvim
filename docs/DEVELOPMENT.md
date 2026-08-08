@@ -35,6 +35,9 @@ into a temporary copy of `.luarc.json` first — the headless checker does not
 expand it, so a bare `lua-language-server --check .` reports spurious
 undefined-`vim` findings.
 
+GitHub Actions runs this gate and all four test suites on pushes and pull
+requests in `.github/workflows/ci.yml`.
+
 The frontend (`assets/app.js`, `assets/mdpv.css`, `assets/index.html`) is
 hand-formatted — no Prettier config on purpose; `node --check` guards syntax
 and the test suites exercise the rest.

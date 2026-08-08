@@ -108,7 +108,139 @@ local s405 = http({ '-i', '--max-time', '5', '-X', 'POST', base .. '/' })
 check('POST is 405', s405.stdout:find('405') ~= nil)
 
 status, body = get(base .. '/')
-check('index lists active previews', status == 200 and body:find('sample.md', 1, true) ~= nil)
+check(
+  'index does not expose preview tokens',
+  status == 200 and body:find(token, 1, true) == nil and body:find('sample.md', 1, true) == nil
+)
+
+local function response_body(response)
+  return response:match('\r?\n\r?\n(.*)$') or ''
+end
+
+local hindex = http({ '-i', '-X', 'HEAD', '--max-time', '5', base .. '/' })
+check(
+  'HEAD / returns headers without a body',
+  hindex.stdout:find('HTTP/1%.1 200') ~= nil and response_body(hindex.stdout) == ''
+)
+local hpage = http({ '-i', '-X', 'HEAD', '--max-time', '5', url })
+check(
+  'HEAD /p/<token> returns headers without a body',
+  hpage.stdout:find('HTTP/1%.1 200') ~= nil and response_body(hpage.stdout) == ''
+)
+local hevents = http({ '-i', '-X', 'HEAD', '--max-time', '5', base .. '/events/' .. token })
+check(
+  'HEAD /events/<token> does not open an SSE stream',
+  hevents.stdout:find('HTTP/1%.1 200') ~= nil
+    and hevents.stdout:find('Content%-Length:') == nil
+    and response_body(hevents.stdout) == ''
+)
+local no_content = http({ '-i', '--max-time', '5', '-X', 'POST', '-d', '{}', base .. '/sync/' .. token })
+check(
+  '204 responses omit a body and Content-Length',
+  no_content.stdout:find('HTTP/1%.1 204') ~= nil
+    and no_content.stdout:find('Content%-Length:') == nil
+    and response_body(no_content.stdout) == ''
+)
+
+local slow = assert(vim.uv.new_tcp())
+local slow_eof = false
+slow:connect(require('mdpv.server').info().host, require('mdpv.server').info().port, function(err)
+  if not err then
+    slow:read_start(function(read_err, chunk)
+      if read_err or not chunk then
+        slow_eof = true
+        slow:read_stop()
+      end
+    end)
+    slow:write('GET / HTTP/1.1\r\nHost: audit\r\n')
+  end
+end)
+vim.wait(3500)
+check('incomplete HTTP requests time out', slow_eof)
+if not slow:is_closing() then
+  slow:close()
+end
+
+local function raw_request(request)
+  local sock = assert(vim.uv.new_tcp())
+  local out, done = '', false
+  sock:connect(require('mdpv.server').info().host, require('mdpv.server').info().port, function(err)
+    if err then
+      done = true
+      return
+    end
+    sock:read_start(function(read_err, chunk)
+      if read_err or not chunk then
+        done = true
+        return
+      end
+      out = out .. chunk
+    end)
+    sock:write(request)
+  end)
+  vim.wait(2000, function()
+    return done
+  end, 10)
+  if not sock:is_closing() then
+    sock:close()
+  end
+  return out
+end
+
+local invalid_length =
+  raw_request('POST /sync/' .. token .. ' HTTP/1.1\r\nHost: audit\r\nContent-Length: 1e1\r\n\r\n{"line":1}')
+check('invalid Content-Length syntax is rejected', invalid_length:find('HTTP/1%.1 400') ~= nil)
+local duplicate_length = raw_request(
+  'POST /sync/' .. token .. ' HTTP/1.1\r\nHost: audit\r\nContent-Length: 1\r\nContent-Length: 1\r\n\r\n{"line":1}'
+)
+check('duplicate Content-Length headers are rejected', duplicate_length:find('HTTP/1%.1 400') ~= nil)
+local chunked =
+  raw_request('POST /sync/' .. token .. ' HTTP/1.1\r\nHost: audit\r\nTransfer-Encoding: chunked\r\n\r\n1\r\n0\r\n')
+check('unsupported Transfer-Encoding is rejected', chunked:find('HTTP/1%.1 400') ~= nil)
+
+local sequential_failure
+for i = 1, 270 do
+  local res = http({ '-o', '/dev/null', '-w', '%{http_code}', '--max-time', '2', base .. '/' })
+  if res.stdout ~= '200' then
+    sequential_failure = ('request %d returned %s'):format(i, res.stdout)
+    break
+  end
+end
+check('closed HTTP connections release capacity', sequential_failure == nil, sequential_failure)
+
+local config_out = ''
+local config_job = vim.system({
+  'curl',
+  '-sN',
+  '--max-time',
+  '4',
+  base .. '/events/' .. token .. '?since=' .. vim.api.nvim_buf_get_changedtick(buf1),
+}, {
+  text = true,
+  stdout = function(_, data)
+    if data then
+      config_out = config_out .. data
+    end
+  end,
+}, function() end)
+vim.wait(300)
+require('mdpv').setup({ open_browser = false, scroll_sync = false })
+local saw_config = vim.wait(2000, function()
+  return config_out:find('event: config', 1, true) ~= nil
+end, 20)
+check('runtime scroll-sync changes notify existing pages', saw_config, config_out)
+config_job:kill(15)
+
+require('mdpv').setup({ open_browser = false, theme = 'dark', mermaid = false, scroll_sync = false })
+status, body = get(url)
+check(
+  'runtime setup updates page-wide and preview configuration',
+  status == 200
+    and body:find('data-theme="dark"', 1, true) ~= nil
+    and body:find('"mermaid":false', 1, true) ~= nil
+    and body:find('"scrollSync":false', 1, true) ~= nil
+)
+require('mdpv').setup({ open_browser = false, theme = 'auto', mermaid = true, scroll_sync = 'both' })
 
 -- --- File route (relative image) -------------------------------------------
 
@@ -130,6 +262,10 @@ status = get(base .. '/f/' .. token .. '/../../../../../../etc/passwd', { '--pat
 check('file route path traversal rejected', status == 403, status)
 status = get(base .. '/f/' .. token .. '/%2e%2e/%2e%2e/%2e%2e/etc/passwd', { '--path-as-is' })
 check('encoded file traversal rejected', status == 403, status)
+status = get(base .. '/f/' .. token .. '/%2e%2e%5c..%5cetc%5cpasswd', { '--path-as-is' })
+check('Windows-style encoded traversal rejected', status == 403, status)
+status = get(base .. '/f/' .. token .. '/%2Fetc/passwd', { '--path-as-is' })
+check('encoded absolute file path rejected', status == 403, status)
 
 -- Relative .md links render as a static page instead of serving raw bytes.
 status, body = get(base .. '/f/' .. token .. '/second.md')
@@ -407,6 +543,44 @@ check('watched preview opened', wtoken ~= nil)
 -- Serving the image is what registers the watch.
 local ires = http({ '-o', '/dev/null', '-w', '%{http_code}', '--max-time', '5', base .. '/f/' .. wtoken .. '/pic.png' })
 check('watched image served', ires.stdout == '200', ires.stdout)
+write_file(watch_dir .. '/unsafe.html', '<script>document.title = "unsafe"</script>')
+status, body = get(base .. '/f/' .. wtoken .. '/unsafe.html')
+check(
+  'active workspace documents are not executable through /f/',
+  status == 200
+    and body:find('Content%-Type: application/octet%-stream') ~= nil
+    and body:find('Content%-Disposition: attachment') ~= nil
+    and body:find('Content%-Security%-Policy') ~= nil
+)
+vim.fn.system({ 'ln', '-s', '/etc/hostname', watch_dir .. '/leak.png' })
+status = get(base .. '/f/' .. wtoken .. '/leak.png')
+check('symlinked files outside the preview directory are rejected', status == 403, status)
+local missing_media = get(base .. '/f/' .. wtoken .. '/missing.png')
+check('failed media requests do not create watcher entries', missing_media == 404, missing_media)
+local watched
+for i = 1, 10 do
+  local name, value = debug.getupvalue(require('mdpv.watch').add, i)
+  if not name then
+    break
+  end
+  if name == 'watched' then
+    watched = value
+    break
+  end
+end
+local watched_preview = watched[wtoken]
+local served_pic, retained_missing = false, false
+if watched_preview then
+  for _, watched_dir in pairs(watched_preview.dirs) do
+    served_pic = served_pic or watched_dir.files['pic.png'] ~= nil
+    retained_missing = retained_missing or watched_dir.files['missing.png'] ~= nil
+  end
+end
+check(
+  'watchers only retain successfully served media',
+  served_pic and not retained_missing,
+  vim.inspect(watched_preview)
+)
 local asset_out = ''
 vim.system({ 'curl', '-sN', '--max-time', '4', base .. '/events/' .. wtoken }, {
   text = true,
@@ -450,6 +624,46 @@ end
 local url1b = require('mdpv').open(buf1)
 check('re-open reuses URL', url1b == url, ('%s vs %s'):format(url1b, url))
 check('re-open does not duplicate', #require('mdpv').list() == 2)
+
+-- Closing and reopening must retire the old nvim_buf_attach callback. The
+-- first edit after reopening invokes the old callback once so it can detach;
+-- every later edit must reach only the current preview.
+local old_attach = vim.api.nvim_buf_attach
+local attach_callbacks = 0
+---@diagnostic disable-next-line: duplicate-set-field
+vim.api.nvim_buf_attach = function(bufnr, send_buffer, opts)
+  if opts and opts.on_lines then
+    local on_lines = opts.on_lines
+    opts.on_lines = function(...)
+      attach_callbacks = attach_callbacks + 1
+      return on_lines(...)
+    end
+  end
+  return old_attach(bufnr, send_buffer, opts)
+end
+vim.cmd('enew')
+local lifecycle_buf = vim.api.nvim_get_current_buf()
+vim.cmd('file /tmp/mdpv-lifecycle-audit.md')
+vim.api.nvim_buf_set_lines(lifecycle_buf, 0, -1, false, { '# lifecycle' })
+assert(require('mdpv').open(lifecycle_buf, { force = true }))
+require('mdpv').close(lifecycle_buf)
+assert(require('mdpv').open(lifecycle_buf, { force = true }))
+attach_callbacks = 0
+vim.api.nvim_buf_set_lines(lifecycle_buf, -1, -1, false, { 'lifecycle first edit' })
+vim.wait(100)
+local first_edit_callbacks = attach_callbacks
+attach_callbacks = 0
+vim.api.nvim_buf_set_lines(lifecycle_buf, -1, -1, false, { 'lifecycle second edit' })
+vim.wait(100)
+local second_edit_callbacks = attach_callbacks
+vim.api.nvim_buf_attach = old_attach
+require('mdpv').close(lifecycle_buf)
+vim.cmd('bwipeout! ' .. lifecycle_buf)
+check(
+  're-opened preview detaches stale buffer callbacks',
+  first_edit_callbacks == 2 and second_edit_callbacks == 1,
+  ('first=%d second=%d'):format(first_edit_callbacks, second_edit_callbacks)
+)
 
 -- --- Filetype guard -----------------------------------------------------------
 

@@ -85,6 +85,31 @@ vim.wait(20000, function()
 end, 50)
 check('page saw the checked state come back (SYNCED)', res and res.code == 0, out)
 
+vim.bo[buf].modifiable = false
+local readonly_out, readonly_done, readonly_res = '', false, nil
+vim.system({ 'node', root .. '/tests/cdp.js', 'readonly-task', url }, {
+  text = true,
+  stdout = function(_, data)
+    if data then
+      readonly_out = readonly_out .. data
+    end
+  end,
+}, function(r)
+  readonly_res = r
+  readonly_done = true
+end)
+check(
+  'read-only preview disables task checkboxes in the browser',
+  vim.wait(20000, function()
+    return readonly_out:find('READONLY', 1, true) ~= nil
+  end, 50),
+  readonly_out
+)
+vim.wait(20000, function()
+  return readonly_done
+end, 50)
+check('read-only checkbox driver completed', readonly_res and readonly_res.code == 0, readonly_out)
+
 require('mdpv').stop()
 
 print(('\n%d passed, %d failed'):format(passes, #failures))

@@ -29,23 +29,56 @@ M.config = vim.deepcopy(defaults)
 function M.setup(opts)
   opts = opts or {}
   vim.validate('opts', opts, 'table')
-  M.config = vim.tbl_deep_extend('force', vim.deepcopy(defaults), opts)
-  vim.validate('config.theme', M.config.theme, function(t)
+  local config = vim.tbl_deep_extend('force', vim.deepcopy(defaults), opts)
+  vim.validate('config.host', config.host, function(v)
+    return type(v) == 'string' and v ~= ''
+  end, 'a non-empty hostname or address')
+  vim.validate('config.port', config.port, function(v)
+    return type(v) == 'number' and v >= 0 and v <= 65535 and v % 1 == 0
+  end, 'an integer between 0 and 65535')
+  vim.validate('config.theme', config.theme, function(t)
     return t == 'auto' or t == 'light' or t == 'dark'
   end, "'auto', 'light' or 'dark'")
-  vim.validate('config.port', M.config.port, 'number')
-  vim.validate('config.debounce', M.config.debounce, 'number')
-  vim.validate('config.filetypes', M.config.filetypes, 'table')
-  vim.validate('config.math', M.config.math, function(v)
+  vim.validate('config.debounce', config.debounce, function(v)
+    return type(v) == 'number' and v >= 0 and v % 1 == 0
+  end, 'a non-negative integer')
+  vim.validate('config.filetypes', config.filetypes, 'table')
+  vim.validate('config.filetypes', config.filetypes, vim.islist, 'a list of filetype strings')
+  for i, filetype in ipairs(config.filetypes) do
+    vim.validate(('config.filetypes[%d]'):format(i), filetype, 'string')
+  end
+  vim.validate('config.auto_close', config.auto_close, 'boolean')
+  vim.validate('config.auto_stop', config.auto_stop, 'boolean')
+  vim.validate('config.open_browser', config.open_browser, 'boolean')
+  vim.validate('config.math', config.math, function(v)
     return type(v) == 'boolean' or type(v) == 'table'
   end, "boolean or a table like { macros = { ['\\\\RR'] = '\\\\mathbb{R}' } }")
-  vim.validate('config.mermaid', M.config.mermaid, 'boolean')
-  vim.validate('config.emoji', M.config.emoji, 'boolean')
-  vim.validate('config.wikilinks', M.config.wikilinks, 'boolean')
-  vim.validate('config.reload_images', M.config.reload_images, 'boolean')
-  vim.validate('config.scroll_sync', M.config.scroll_sync, function(t)
+  vim.validate('config.mermaid', config.mermaid, 'boolean')
+  vim.validate('config.emoji', config.emoji, 'boolean')
+  vim.validate('config.wikilinks', config.wikilinks, 'boolean')
+  vim.validate('config.reload_images', config.reload_images, 'boolean')
+  vim.validate('config.scroll_sync', config.scroll_sync, function(t)
     return t == true or t == false or t == 'both'
   end, "true, false or 'both'")
+  if type(config.math) == 'table' then
+    local ok = pcall(vim.json.encode, config.math)
+    if not ok then
+      error('config.math must contain JSON-serializable KaTeX options', 0)
+    end
+  end
+
+  local server = require('mdpv.server')
+  if server.is_running() then
+    local ok, err, server_changed = server.reconfigure(config)
+    if not ok then
+      error(err, 0)
+    end
+    local preview_changed = require('mdpv.preview').reconfigure(config)
+    if server_changed or preview_changed then
+      server.notify_reconfigure()
+    end
+  end
+  M.config = config
 end
 
 local function notify(msg, level)

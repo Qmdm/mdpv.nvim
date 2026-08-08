@@ -6,38 +6,44 @@ local server = require('mdpv.server')
 
 local M = {}
 
+---@class mdpv.SseClient
+---@field assets table<string, true>
+---@field assets_frame string?
+---@field update string?
+---@field scroll string?
+---@field other table<string, string>
+---@field pending_bytes integer
+---@field writing boolean
+---@field closing boolean?
+---@field close_frame string?
+
 ---@class mdpv.Preview
 ---@field token string unguessable route id
 ---@field bufnr integer
 ---@field title string tail of the buffer name (or a placeholder)
 ---@field dir string directory relative file requests resolve against
----@field clients table<uv.uv_tcp_t, true> attached SSE sockets
+---@field clients table<uv.uv_tcp_t, mdpv.SseClient> attached SSE sockets and queue state
 ---@field payload fun(): string? buffer content as JSON (SSE payload and page boot data)
 ---@field timer uv.uv_timer_t debounce timer
 ---@field scroll_timer uv.uv_timer_t? cursor-sync debounce timer
 ---@field on_sync fun(line: integer)? browser->editor cursor move (page's "move cursor on scroll" switch)
 ---@field on_toggle fun(line: integer, checked: boolean)? browser->editor task checkbox flip
 ---@field augroup integer
+---@field config table current plugin configuration
+---@field debounce integer current edit debounce
+---@field payload_generation integer invalidates the serialized payload cache
+---@field revision fun(): string? payload revision for SSE boot handoff
 
 M.previews = {} ---@type table<integer, mdpv.Preview> bufnr -> preview
 
 local function new_token()
   local ok, bytes = pcall(vim.uv.random, 16)
-  if ok and type(bytes) == 'string' then
+  if ok and type(bytes) == 'string' and #bytes == 16 then
     return (bytes:gsub('.', function(c)
       return ('%02x'):format(c:byte())
     end))
   end
-  -- Fallback: not cryptographic, but the server only listens on localhost.
-  -- Pick exactly one hex digit per iteration so the token is always 32 chars.
-  math.randomseed(vim.uv.hrtime() % 2 ^ 31)
-  local hex = '0123456789abcdef'
-  local t = {}
-  for i = 1, 32 do
-    local n = math.random(16)
-    t[i] = hex:sub(n, n)
-  end
-  return table.concat(t)
+  return nil, 'secure preview-token generation is unavailable'
 end
 
 local function buf_meta(bufnr)
@@ -48,11 +54,8 @@ local function buf_meta(bufnr)
   return vim.fn.fnamemodify(name, ':t'), vim.fs.dirname(name)
 end
 
---- Serialize the buffer into a JSON payload. Used both as the SSE `update`
---- event body and as the boot data embedded in the page shell (instant first
---- paint, no SSE round-trip). Main loop only.
-local function make_payload(pv, config)
-  local features = {
+local function make_features(config)
+  return {
     -- false | true | table of KaTeX options ({ macros = ... }), passed through
     math = config.math == false and false or (type(config.math) == 'table' and config.math or true),
     mermaid = config.mermaid ~= false,
@@ -61,22 +64,45 @@ local function make_payload(pv, config)
     -- false | true (editor -> browser) | 'both' (adds browser -> editor)
     scrollSync = config.scroll_sync == nil and true or config.scroll_sync,
   }
+end
+
+--- Serialize the buffer into a JSON payload. The cache is shared by the page
+--- boot response and the first SSE update, while changedtick and the preview
+--- generation invalidate it after edits or reconfiguration. Main loop only.
+local function make_payload(pv)
+  local cached_tick, cached_title, cached_modifiable, cached_generation, cached_json
   return function()
     if not vim.api.nvim_buf_is_valid(pv.bufnr) then
       return nil
     end
+    local tick = vim.api.nvim_buf_get_changedtick(pv.bufnr)
+    local modifiable = vim.bo[pv.bufnr].modifiable
+    if
+      cached_json
+      and cached_tick == tick
+      and cached_title == pv.title
+      and cached_modifiable == modifiable
+      and cached_generation == pv.payload_generation
+    then
+      return cached_json
+    end
     local lines = vim.api.nvim_buf_get_lines(pv.bufnr, 0, -1, false)
-    return vim.json.encode({
+    local json = vim.json.encode({
       token = pv.token,
       title = pv.title,
       md = table.concat(lines, '\n'),
-      features = features,
+      modifiable = modifiable,
+      revision = ('%d:%d'):format(tick, pv.payload_generation),
+      features = make_features(pv.config),
     })
+    cached_tick, cached_title, cached_modifiable = tick, pv.title, modifiable
+    cached_generation, cached_json = pv.payload_generation, json
+    return json
   end
 end
 
 local function push_now(pv)
-  if not M.previews[pv.bufnr] then
+  if M.previews[pv.bufnr] ~= pv then
     return
   end
   if next(pv.clients) == nil then
@@ -90,10 +116,10 @@ end
 
 --- Debounced change notification: (re)arm the timer; only the last change in
 --- a burst reaches the browser.
-local function on_change(pv, debounce_ms)
+local function on_change(pv)
   pv.timer:stop()
   pv.timer:start(
-    debounce_ms,
+    pv.debounce,
     0,
     vim.schedule_wrap(function()
       push_now(pv)
@@ -104,18 +130,18 @@ end
 --- Content tracking via buffer attach: on_lines fires for every mutation
 --- (typing, :s, undo, LSP edits, API calls), unlike TextChanged autocmds.
 --- The callback runs under textlock, so it only re-arms the uv timer.
-local function track_changes(pv, config)
+local function track_changes(pv)
   local bufnr = pv.bufnr
   vim.api.nvim_buf_attach(bufnr, false, {
     on_lines = function()
-      if not M.previews[bufnr] then
+      if M.previews[bufnr] ~= pv then
         return true -- preview closed: detach
       end
-      on_change(pv, config.debounce)
+      on_change(pv)
     end,
     on_reload = function()
-      if M.previews[bufnr] then
-        on_change(pv, config.debounce)
+      if M.previews[bufnr] == pv then
+        on_change(pv)
       end
     end,
   })
@@ -123,9 +149,13 @@ end
 
 --- Scroll sync: stream the cursor line so the page can follow it. Cursor
 --- position (not topline) is the anchor — it is what the user is editing.
-local function setup_scroll_sync(pv, config)
+local function setup_scroll_sync(pv)
   local bufnr = pv.bufnr
-  pv.scroll_timer = assert(vim.uv.new_timer())
+  local timer = vim.uv.new_timer()
+  if not timer then
+    return false
+  end
+  pv.scroll_timer = timer
   local last_line = 0
   vim.api.nvim_create_autocmd({ 'CursorMoved', 'CursorMovedI' }, {
     group = pv.augroup,
@@ -144,7 +174,7 @@ local function setup_scroll_sync(pv, config)
         80,
         0,
         vim.schedule_wrap(function()
-          if M.previews[bufnr] then
+          if M.previews[bufnr] == pv then
             server.broadcast(pv.token, 'scroll', vim.json.encode({ line = line }))
           end
         end)
@@ -168,6 +198,21 @@ local function setup_scroll_sync(pv, config)
     last_line = line
     vim.api.nvim_win_set_cursor(wins[1], { line, 0 })
   end
+  return true
+end
+
+local function disable_scroll_sync(pv)
+  vim.api.nvim_clear_autocmds({
+    group = pv.augroup,
+    buffer = pv.bufnr,
+    event = { 'CursorMoved', 'CursorMovedI' },
+  })
+  if pv.scroll_timer then
+    pv.scroll_timer:stop()
+    pv.scroll_timer:close()
+    pv.scroll_timer = nil
+  end
+  pv.on_sync = nil
 end
 
 --- Task-list checkboxes clicked in the page POST their new state; flip the
@@ -193,7 +238,7 @@ local function setup_checkbox_toggle(pv)
   end
 end
 
-local function setup_auto_close(pv, config)
+local function setup_auto_close(pv)
   local bufnr = pv.bufnr
   vim.api.nvim_create_autocmd({ 'BufUnload', 'BufWipeout' }, {
     group = pv.augroup,
@@ -202,7 +247,9 @@ local function setup_auto_close(pv, config)
     callback = function()
       -- Autocmd fires mid-unload; defer teardown out of the critical path.
       vim.schedule(function()
-        M.close(bufnr, config)
+        if M.previews[bufnr] == pv then
+          M.close(bufnr, pv.config)
+        end
       end)
     end,
   })
@@ -217,43 +264,119 @@ function M.open(bufnr, config)
     return server.url(existing.token)
   end
 
+  local token, token_err = new_token()
+  if not token then
+    return nil, token_err
+  end
+  local preview_timer = vim.uv.new_timer()
+  if not preview_timer then
+    return nil, 'could not create preview timer'
+  end
+  local server_was_running = server.is_running()
   local ok, err = server.start(config)
   if not ok then
+    preview_timer:close()
     return nil, err
   end
 
   local title, dir = buf_meta(bufnr)
   local pv = {
-    token = new_token(),
+    token = token,
     bufnr = bufnr,
     title = title,
     dir = dir,
     clients = {},
-    timer = assert(vim.uv.new_timer()),
+    timer = preview_timer,
+    config = config,
+    debounce = config.debounce,
+    payload_generation = 0,
   }
-  pv.payload = make_payload(pv, config)
+  pv.revision = function()
+    if not vim.api.nvim_buf_is_valid(bufnr) then
+      return nil
+    end
+    return ('%d:%d'):format(vim.api.nvim_buf_get_changedtick(bufnr), pv.payload_generation)
+  end
+  pv.payload = make_payload(pv)
   pv.augroup = vim.api.nvim_create_augroup('mdpv.' .. bufnr, { clear = true })
 
-  track_changes(pv, config)
+  if config.scroll_sync ~= false and not setup_scroll_sync(pv) then
+    pcall(vim.api.nvim_del_augroup_by_id, pv.augroup)
+    pv.timer:close()
+    if not server_was_running then
+      server.stop()
+    end
+    return nil, 'could not create scroll-sync timer'
+  end
+  track_changes(pv)
   vim.api.nvim_create_autocmd('BufFilePost', {
     group = pv.augroup,
     buffer = bufnr,
     callback = function()
+      local old_title = pv.title
       pv.title, pv.dir = buf_meta(bufnr)
-      on_change(pv, config.debounce)
+      if pv.title ~= old_title then
+        pv.payload_generation = pv.payload_generation + 1
+      end
+      on_change(pv)
     end,
   })
-  if config.scroll_sync ~= false then
-    setup_scroll_sync(pv, config)
-  end
+  vim.api.nvim_create_autocmd('OptionSet', {
+    group = pv.augroup,
+    pattern = 'modifiable',
+    callback = function(args)
+      if args.buf == bufnr then
+        pv.payload_generation = pv.payload_generation + 1
+        on_change(pv)
+      end
+    end,
+  })
   setup_checkbox_toggle(pv)
   if config.auto_close then
-    setup_auto_close(pv, config)
+    setup_auto_close(pv)
   end
 
   server.register(pv)
   M.previews[bufnr] = pv
   return server.url(pv.token)
+end
+
+--- Apply configuration changes to previews that are already open. The server
+--- sends a config event after this method returns; browser pages reload from
+--- the now-consistent server and preview state.
+---@param config table
+function M.reconfigure(config)
+  local browser_changed = false
+  for _, pv in pairs(M.previews) do
+    local auto_close_changed = pv.config.auto_close ~= config.auto_close
+    local features_changed = not vim.deep_equal(make_features(pv.config), make_features(config))
+    if features_changed then
+      browser_changed = true
+      pv.payload_generation = pv.payload_generation + 1
+    end
+    pv.config = config
+    pv.debounce = config.debounce
+
+    if config.scroll_sync ~= false then
+      if not pv.scroll_timer then
+        setup_scroll_sync(pv)
+      end
+    elseif pv.scroll_timer then
+      disable_scroll_sync(pv)
+    end
+
+    if auto_close_changed then
+      vim.api.nvim_clear_autocmds({
+        group = pv.augroup,
+        buffer = pv.bufnr,
+        event = { 'BufUnload', 'BufWipeout' },
+      })
+      if config.auto_close then
+        setup_auto_close(pv)
+      end
+    end
+  end
+  return browser_changed
 end
 
 ---@param bufnr integer
@@ -281,7 +404,8 @@ end
 
 ---@param config table
 function M.close_all(config)
-  for bufnr in pairs(M.previews) do
+  local buffers = vim.tbl_keys(M.previews)
+  for _, bufnr in ipairs(buffers) do
     M.close(bufnr, config)
   end
   server.stop()

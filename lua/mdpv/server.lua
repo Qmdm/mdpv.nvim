@@ -2,15 +2,15 @@
 ---
 --- One TCP server per Neovim instance, started lazily and bound to localhost.
 --- Each previewed buffer registers a "preview" (an unguessable token) that owns
---- three routes:
+--- five routes:
 ---   GET /p/<token>        rendered preview page (HTML shell)
 ---   GET /events/<token>   Server-Sent Events stream pushing buffer content
 ---   GET /f/<token>/<path> files resolved relative to the buffer's directory
---- Plus shared routes:
----   GET /                 index of active previews
----   GET /assets/<path>    plugin frontend assets (immutable-cached)
 ---   POST /sync/<token>    browser -> editor messages (cursor line, checkbox)
 ---   POST /prefs/<token>   browser -> editor page-preference changes
+--- Plus shared routes:
+---   GET /                 server status page (never exposes preview tokens)
+---   GET /assets/<path>    plugin frontend assets (immutable-cached)
 ---
 --- This module owns routing, the SSE streams, and the connection lifecycle;
 --- wire-level helpers live in mdpv.http, file responses in mdpv.files, and
@@ -30,10 +30,15 @@ local MIME = http.MIME
 
 local M = {}
 
+-- Declared before routing because an SSE client is registered before its
+-- response head has finished flushing.
+local pending_frame, write_client, queue_client, prune_client
+
 local state = {
   tcp = nil, ---@type uv.uv_tcp_t?
   host = nil, ---@type string?
   port = nil, ---@type integer?
+  requested_port = nil, ---@type integer?
   theme = 'auto',
   previews = {}, ---@type table<string, mdpv.Preview> token -> preview
   heartbeat = nil, ---@type uv.uv_timer_t?
@@ -47,6 +52,8 @@ local state = {
   template = nil, ---@type string? assets/index.html, read once per server run
   reload_images = true, -- watch served files and push `assets` events on change
   prefs = {}, ---@type table<string, string> page preferences, mirrored to disk
+  connections = {}, ---@type table<uv.uv_tcp_t, true>
+  connection_count = 0,
 }
 
 local plugin_root = vim.fn.fnamemodify(debug.getinfo(1, 'S').source:sub(2), ':h:h:h')
@@ -54,6 +61,8 @@ local asset_dir = plugin_root .. '/assets'
 
 local MAX_HEADER_BYTES = 16 * 1024
 local MAX_BODY_BYTES = 4 * 1024 -- POST bodies are tiny sync messages
+local MAX_CONNECTIONS = 256
+local REQUEST_TIMEOUT_MS = 3000
 
 --- Theme -> stylesheets injected into the page shell.
 local THEME_CSS = {
@@ -71,6 +80,32 @@ local function css_links(theme)
     out[#out + 1] = ('<link rel="stylesheet" id="%s" href="/assets/%s?v=%s">'):format(CSS_IDS[i], rel, state.buster)
   end
   return table.concat(out, '\n')
+end
+
+local function features_for(config)
+  return {
+    math = config.math == false and false or (type(config.math) == 'table' and config.math or true),
+    mermaid = config.mermaid ~= false,
+    emoji = config.emoji ~= false,
+    wikilinks = config.wikilinks ~= false,
+  }
+end
+
+local function apply_runtime_config(config)
+  local old_reload = state.reload_images
+  local features = features_for(config)
+  local changed = state.theme ~= config.theme
+    or not vim.deep_equal(state.features, features)
+    or old_reload ~= (config.reload_images ~= false)
+  state.theme = config.theme
+  state.features = features
+  state.reload_images = config.reload_images ~= false
+  if old_reload and not state.reload_images then
+    for token in pairs(state.previews) do
+      watch.drop(token)
+    end
+  end
+  return changed
 end
 
 ------------------------------------------------------------------------------
@@ -150,12 +185,26 @@ end
 
 local CSP = table.concat({
   "default-src 'self'",
+  "base-uri 'none'",
+  "object-src 'none'",
+  "frame-ancestors 'none'",
   "img-src 'self' data: https: http:",
   "media-src 'self' data: https: http:",
   "style-src 'self' 'unsafe-inline'",
   "script-src 'self'",
   "connect-src 'self'",
 }, '; ')
+
+local function page_headers(content_type)
+  return {
+    ['Content-Type'] = content_type or MIME.html,
+    ['Cache-Control'] = 'no-store',
+    ['Content-Security-Policy'] = CSP,
+    ['Referrer-Policy'] = 'no-referrer',
+    ['X-Content-Type-Options'] = 'nosniff',
+    ['X-Frame-Options'] = 'DENY',
+  }
+end
 
 local function page_shell(title, boot_json, cb)
   local function build(tpl)
@@ -185,36 +234,44 @@ local function page_shell(title, boot_json, cb)
   end)
 end
 
-local function route_page(sock, token)
+---@return mdpv.SseClient
+local function new_sse_client()
+  return {
+    assets = {},
+    other = {},
+    pending_bytes = 0,
+    writing = false,
+  }
+end
+
+local function route_page(sock, token, req)
   local pv = state.previews[token]
   if not pv then
     return respond(
       sock,
       404,
-      { ['Content-Type'] = MIME.html },
+      page_headers(MIME.html),
       '<!DOCTYPE html><meta charset="utf-8"><title>mdpv</title>'
         .. '<p style="font-family:sans-serif">This preview has been closed. '
-        .. '<a href="/">Active previews</a></p>'
+        .. '<a href="/">Open previews from Neovim</a></p>',
+      req.head_only
     )
   end
   -- Buffer content is embedded for an instant first paint, and reading it
   -- requires the main loop.
   vim.schedule(function()
     if not state.previews[token] then
-      return respond(sock, 404)
+      return respond(sock, 404, nil, nil, req.head_only)
     end
     local boot_json = pv.payload()
     if not boot_json then
-      return respond(sock, 404)
+      return respond(sock, 404, nil, nil, req.head_only)
     end
     page_shell(pv.title, boot_json, function(html)
       if not html then
-        return respond(sock, 500)
+        return respond(sock, 500, nil, nil, req.head_only)
       end
-      respond(sock, 200, {
-        ['Content-Type'] = MIME.html,
-        ['Content-Security-Policy'] = CSP,
-      }, html)
+      respond(sock, 200, page_headers(MIME.html), html, req.head_only)
     end)
   end)
 end
@@ -223,10 +280,10 @@ end
 --- same shell and renderer as a live preview, but no buffer behind it, so no
 --- SSE stream. Relative links keep working because `base` points the client
 --- at this file's directory within the token's file namespace.
-local function route_static_md(sock, token, rel, fpath)
+local function route_static_md(sock, token, rel, fpath, req)
   files.read(fpath, function(data, err)
     if not data then
-      return respond(sock, err == 'toobig' and 413 or 404)
+      return respond(sock, err == 'toobig' and 413 or 404, nil, nil, req.head_only)
     end
     vim.schedule(function()
       local title = rel:match('([^/]+)$') or rel
@@ -241,26 +298,33 @@ local function route_static_md(sock, token, rel, fpath)
         features = state.features,
       })
       if not ok then
-        return respond(sock, 500) -- e.g. not valid UTF-8
+        return respond(sock, 500, nil, nil, req.head_only) -- e.g. not valid UTF-8
       end
       page_shell(title, boot_json, function(html)
         if not html then
-          return respond(sock, 500)
+          return respond(sock, 500, nil, nil, req.head_only)
         end
-        respond(sock, 200, {
-          ['Content-Type'] = MIME.html,
-          ['Content-Security-Policy'] = CSP,
-        }, html)
+        respond(sock, 200, page_headers(MIME.html), html, req.head_only)
       end)
     end)
   end)
 end
 
-local function route_events(sock, token)
+local function route_events(sock, token, req, since)
   local pv = state.previews[token]
   if not pv then
-    return respond(sock, 404)
+    return respond(sock, 404, nil, nil, req.head_only)
   end
+  if req.head_only then
+    return respond(sock, 200, {
+      ['Content-Type'] = 'text/event-stream',
+      ['Cache-Control'] = 'no-cache',
+      ['X-Accel-Buffering'] = 'no',
+    }, '', true, true)
+  end
+  local client = new_sse_client()
+  client.writing = true
+  pv.clients[sock] = client
   local ok = pcall(
     sock.write,
     sock,
@@ -272,22 +336,41 @@ local function route_events(sock, token)
       'X-Accel-Buffering: no',
       '',
       'retry: 1000\n\n',
-    }, '\r\n')
+    }, '\r\n'),
+    function(werr)
+      if werr then
+        return prune_client(sock)
+      end
+      client.writing = false
+      if client.closing then
+        client.closing = false
+        return write_client(pv, sock, client, client.close_frame, true)
+      end
+      if pv.clients[sock] ~= client or sock:is_closing() then
+        return
+      end
+      local frame, is_close = pending_frame(client)
+      if frame then
+        write_client(pv, sock, client, frame, is_close)
+      end
+      -- Initial content push needs buffer access -> main loop. Queue it only for
+      -- this connection; broadcasting it would duplicate work for every client.
+      vim.schedule(function()
+        if not state.previews[token] or pv.clients[sock] ~= client or sock:is_closing() then
+          return
+        end
+        if since == nil or since ~= pv.revision() then
+          local json = pv.payload()
+          if json then
+            queue_client(pv, sock, 'update', json)
+          end
+        end
+      end)
+    end
   )
   if not ok then
-    return close_sock(sock)
+    return prune_client(sock)
   end
-  pv.clients[sock] = true
-  -- Initial content push needs buffer access -> main loop.
-  vim.schedule(function()
-    if not state.previews[token] or sock:is_closing() then
-      return
-    end
-    local json = pv.payload()
-    if json then
-      pcall(sock.write, sock, sse_frame('update', json))
-    end
-  end)
   return true -- keep the socket open (SSE)
 end
 
@@ -342,12 +425,7 @@ local function route_prefs(sock, token, body)
   respond(sock, 204)
 end
 
-local function route_index(sock)
-  local rows = {}
-  for _, pv in pairs(state.previews) do
-    rows[#rows + 1] = ('<li><a href="/p/%s">%s</a></li>'):format(pv.token, http.html_escape(pv.title))
-  end
-  table.sort(rows)
+local function route_index(sock, req)
   local body = table.concat({
     '<!DOCTYPE html><html><head><meta charset="utf-8"><title>mdpv</title>',
     '<link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">',
@@ -356,11 +434,11 @@ local function route_index(sock)
     'a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}',
     'li{margin:4px 0}h1{font-size:20px}',
     '@media(prefers-color-scheme:dark){body{color:#f0f6fc;background:#0d1117}a{color:#4493f8}}',
-    '</style></head><body><h1>mdpv &mdash; active previews</h1>',
-    #rows > 0 and ('<ul>' .. table.concat(rows) .. '</ul>') or '<p>No active previews.</p>',
+    '</style></head><body><h1>mdpv server</h1>',
+    '<p>Open a preview from Neovim to receive its private URL.</p>',
     '</body></html>',
   })
-  respond(sock, 200, { ['Content-Type'] = MIME.html }, body)
+  respond(sock, 200, page_headers(MIME.html), body, req.head_only)
 end
 
 local function handle_request(sock, head, body)
@@ -392,77 +470,277 @@ local function handle_request(sock, head, body)
   }
 
   if path == '/' then
-    return route_index(sock)
+    return route_index(sock, req)
   end
 
   local token = path:match('^/p/(%x+)$')
   if token then
-    return route_page(sock, token)
+    return route_page(sock, token, req)
   end
 
   token = path:match('^/events/(%x+)$')
   if token then
-    return route_events(sock, token)
+    local since = query:match('^since=([^&;]+)') or query:match('&since=([^&;]+)')
+    since = since and http.percent_decode(since)
+    return route_events(sock, token, req, since)
   end
 
   local rel = path:match('^/assets/(.+)$')
   if rel then
     rel = http.percent_decode(rel)
     if not http.is_confined(rel) then
-      return respond(sock, 403)
+      return respond(sock, 403, nil, nil, req.head_only)
     end
-    return files.serve(sock, asset_dir .. '/' .. rel, 'public, max-age=31536000, immutable', req)
+    return files.resolve_confined(asset_dir, asset_dir .. '/' .. rel, function(real, err)
+      if not real then
+        return respond(sock, err == 'outside' and 403 or 404, nil, nil, req.head_only)
+      end
+      files.serve(sock, real, 'public, max-age=31536000, immutable', req)
+    end)
   end
 
   local ftoken, frel = path:match('^/f/(%x+)/(.+)$')
   if ftoken then
     local pv = state.previews[ftoken]
     if not pv then
-      return respond(sock, 404)
+      return respond(sock, 404, nil, nil, req.head_only)
     end
-    frel = http.percent_decode(frel):gsub('^/+', '')
+    frel = http.percent_decode(frel)
     -- Same confinement as /assets/: reject NUL, absolute paths, and any `..`
     -- segment so a token holder cannot traverse out of the file's directory.
     if not http.is_confined(frel) then
-      return respond(sock, 403)
+      return respond(sock, 403, nil, nil, req.head_only)
     end
     local fpath = pv.dir .. '/' .. frel
-    -- Markdown files render as a page (GitHub-style), so relative .md links
-    -- are followable. `?raw` serves the bytes instead.
-    local low = frel:lower()
-    if (low:match('%.md$') or low:match('%.markdown$')) and not http.has_param(query, 'raw') then
-      return route_static_md(sock, ftoken, frel, fpath)
-    end
-    if state.reload_images then
-      watch.add(ftoken, fpath, frel)
-    end
-    return files.serve(sock, fpath, nil, req)
+    return files.resolve_confined(pv.dir, fpath, function(real, err)
+      if not real then
+        return respond(sock, err == 'outside' and 403 or 404, nil, nil, req.head_only)
+      end
+      -- Markdown files render as a page (GitHub-style), so relative .md links
+      -- are followable. `?raw` serves the bytes instead.
+      local low = frel:lower()
+      if (low:match('%.md$') or low:match('%.markdown$')) and not http.has_param(query, 'raw') then
+        return route_static_md(sock, ftoken, frel, real, req)
+      end
+      return files.serve(sock, real, nil, req, {
+        secure = true,
+        on_open = function(path)
+          if state.reload_images and watch.is_watchable(frel) then
+            watch.add(ftoken, path, frel)
+          end
+        end,
+      })
+    end)
   end
 
-  return respond(sock, 404)
+  return respond(sock, 404, nil, nil, req.head_only)
 end
 
 ------------------------------------------------------------------------------
 -- Connection handling
 ------------------------------------------------------------------------------
 
-local function prune_client(sock)
+prune_client = function(sock)
+  if state.connections[sock] then
+    state.connections[sock] = nil
+    state.connection_count = state.connection_count - 1
+  end
   for _, pv in pairs(state.previews) do
     pv.clients[sock] = nil
   end
   close_sock(sock)
 end
 
+local MAX_SSE_PENDING_BYTES = 8 * 1024 * 1024
+
+local function pending_assets_frame(client)
+  local paths = {}
+  for path in pairs(client.assets) do
+    paths[#paths + 1] = path
+  end
+  if #paths == 0 then
+    return nil
+  end
+  table.sort(paths)
+  return sse_frame('assets', vim.json.encode({ paths = paths }))
+end
+
+pending_frame = function(client)
+  if client.closing then
+    return client.close_frame, true
+  end
+  if client.update then
+    local frame = client.update
+    client.update = nil
+    client.pending_bytes = client.pending_bytes - #frame
+    return frame
+  end
+  if client.scroll then
+    local frame = client.scroll
+    client.scroll = nil
+    client.pending_bytes = client.pending_bytes - #frame
+    return frame
+  end
+  if client.assets_frame then
+    local frame = client.assets_frame
+    client.assets_frame = nil
+    client.assets = {}
+    client.pending_bytes = client.pending_bytes - #frame
+    return frame
+  end
+  for event, frame in pairs(client.other) do
+    client.other[event] = nil
+    client.pending_bytes = client.pending_bytes - #frame
+    return frame
+  end
+end
+
+write_client = function(pv, sock, client, frame, close_after)
+  if client.writing then
+    return
+  end
+  client.writing = true
+  local ok = pcall(sock.write, sock, frame, function(werr)
+    if werr then
+      prune_client(sock)
+      return
+    end
+    client.writing = false
+    if client.closing then
+      client.closing = false
+      write_client(pv, sock, client, client.close_frame, true)
+      return
+    end
+    if close_after then
+      pv.clients[sock] = nil
+      close_sock(sock)
+      return
+    end
+    if pv.clients[sock] ~= client then
+      return
+    end
+    local next_frame, is_close = pending_frame(client)
+    if next_frame then
+      write_client(pv, sock, client, next_frame, is_close)
+    end
+  end)
+  if not ok then
+    prune_client(sock)
+  end
+end
+
+local function clear_pending(client)
+  client.update = nil
+  client.scroll = nil
+  client.assets_frame = nil
+  client.assets = {}
+  client.other = {}
+  client.pending_bytes = 0
+end
+
+queue_client = function(pv, sock, event, data, frame)
+  local client = pv.clients[sock]
+  if not client or sock:is_closing() then
+    return
+  end
+  frame = frame or sse_frame(event, data)
+  if not client.writing and client.pending_bytes == 0 then
+    return write_client(pv, sock, client, frame)
+  end
+
+  if event == 'assets' then
+    local ok, payload = pcall(vim.json.decode, data)
+    if ok and type(payload) == 'table' and type(payload.paths) == 'table' then
+      local old = client.assets_frame
+      for _, path in ipairs(payload.paths) do
+        if type(path) == 'string' then
+          client.assets[path] = true
+        end
+      end
+      client.assets_frame = pending_assets_frame(client)
+      client.pending_bytes = client.pending_bytes
+        - (old and #old or 0)
+        + (client.assets_frame and #client.assets_frame or 0)
+    end
+  elseif event == 'update' then
+    client.pending_bytes = client.pending_bytes - (client.update and #client.update or 0) + #frame
+    client.update = frame
+  elseif event == 'scroll' then
+    client.pending_bytes = client.pending_bytes - (client.scroll and #client.scroll or 0) + #frame
+    client.scroll = frame
+  else
+    client.pending_bytes = client.pending_bytes - (client.other[event] and #client.other[event] or 0) + #frame
+    client.other[event] = frame
+  end
+
+  if client.pending_bytes > MAX_SSE_PENDING_BYTES then
+    pv.clients[sock] = nil
+    close_sock(sock)
+  end
+end
+
+local function sweep_connections()
+  local count = 0
+  for sock in pairs(state.connections) do
+    local ok, closing = pcall(sock.is_closing, sock)
+    if not ok or closing then
+      state.connections[sock] = nil
+    else
+      count = count + 1
+    end
+  end
+  state.connection_count = count
+end
+
 local function on_connection()
+  -- Normal responses close their handles asynchronously. Sweep those handles
+  -- before enforcing the cap so sequential requests do not exhaust it.
+  sweep_connections()
   local sock = uv.new_tcp()
   if not sock then
     return
   end
-  state.tcp:accept(sock)
+  if state.connection_count >= MAX_CONNECTIONS or not state.tcp then
+    return close_sock(sock)
+  end
+  local accepted, accept_err = state.tcp:accept(sock)
+  if not (accepted == 0 or accepted == true or accepted == nil and not accept_err) then
+    return close_sock(sock)
+  end
+  state.connections[sock] = true
+  state.connection_count = state.connection_count + 1
   local chunks, handled = {}, false
   local head_end, body_len -- set once the request head has fully arrived
+  local timeout = uv.new_timer()
+  local function stop_timeout()
+    if timeout then
+      timeout:stop()
+      timeout:close()
+      timeout = nil
+    end
+  end
+  if not timeout then
+    return prune_client(sock)
+  end
+  local timeout_ok, timeout_err = pcall(function()
+    local started, start_err = timeout:start(REQUEST_TIMEOUT_MS, 0, function()
+      if not handled then
+        handled = true
+        stop_timeout()
+        prune_client(sock)
+      end
+    end)
+    if not (started == 0 or started == true or started == nil and not start_err) then
+      error(start_err or 'request timeout timer failed to start')
+    end
+  end)
+  if not timeout_ok then
+    stop_timeout()
+    return prune_client(sock)
+  end
   sock:read_start(function(err, chunk)
     if err or not chunk then
+      stop_timeout()
       return prune_client(sock)
     end
     if handled then
@@ -471,21 +749,51 @@ local function on_connection()
     chunks[#chunks + 1] = chunk
     local data = table.concat(chunks)
     if not head_end then
-      if #data > MAX_HEADER_BYTES then
-        handled = true
-        return respond(sock, 431)
-      end
       head_end = data:find('\r\n\r\n', 1, true)
       if not head_end then
+        if #data > MAX_HEADER_BYTES then
+          handled = true
+          stop_timeout()
+          return respond(sock, 431)
+        end
         return -- keep accumulating headers
+      end
+      if head_end + 3 > MAX_HEADER_BYTES then
+        handled = true
+        stop_timeout()
+        return respond(sock, 431)
       end
       -- Only POST carries a body here (sync messages). No Content-Length
       -- means a body-less POST; chunked encoding is not supported. Header
       -- names are case-insensitive per RFC 9110.
       if data:match('^POST%s') then
-        body_len = tonumber(data:sub(1, head_end + 3):lower():match('content%-length:%s*(%d+)\r\n')) or 0
+        local request_head = data:sub(1, head_end + 3)
+        if http.req_header(request_head, 'transfer-encoding') then
+          handled = true
+          stop_timeout()
+          return respond(sock, 400)
+        end
+        local content_lengths = http.req_headers(request_head, 'content-length')
+        if #content_lengths > 1 then
+          handled = true
+          stop_timeout()
+          return respond(sock, 400)
+        end
+        local content_length = content_lengths[1]
+        if content_length and not content_length:match('^%d+$') then
+          handled = true
+          stop_timeout()
+          return respond(sock, 400)
+        end
+        body_len = content_length and tonumber(content_length) or 0
+        if not body_len or body_len % 1 ~= 0 then
+          handled = true
+          stop_timeout()
+          return respond(sock, 400)
+        end
         if body_len > MAX_BODY_BYTES then
           handled = true
+          stop_timeout()
           return respond(sock, 413)
         end
       end
@@ -494,6 +802,7 @@ local function on_connection()
       return -- body still streaming in
     end
     handled = true
+    stop_timeout()
     chunks = nil
     local head = data:sub(1, head_end + 3)
     local body = body_len and data:sub(head_end + 4, head_end + 3 + body_len) or nil
@@ -519,62 +828,96 @@ end
 ---@return boolean ok, string? err
 function M.start(config)
   if state.tcp then
-    return true
+    local ok, err, changed = M.reconfigure(config)
+    if ok and changed then
+      M.notify_reconfigure()
+    end
+    return ok, err
   end
-  state.theme = config.theme
-  state.features = {
-    math = config.math == false and false or (type(config.math) == 'table' and config.math or true),
-    mermaid = config.mermaid ~= false,
-    emoji = config.emoji ~= false,
-    wikilinks = config.wikilinks ~= false,
-  }
-  state.reload_images = config.reload_images ~= false
+  apply_runtime_config(config)
   state.prefs = load_prefs() -- M.start runs on the main loop (user command)
   local tcp = uv.new_tcp()
   if not tcp then
     return false, 'could not create TCP handle'
   end
+  local heartbeat
   local ok, err = pcall(function()
     local bok, berr = tcp:bind(config.host, config.port)
-    assert(bok == 0 or bok == true or bok == nil and not berr, berr or 'bind failed')
+    if not (bok == 0 or bok == true or bok == nil and not berr) then
+      error(berr or 'bind failed')
+    end
     local lok, lerr = tcp:listen(128, function(lerr2)
       if not lerr2 then
         on_connection()
       end
     end)
-    assert(lok == 0 or lok == true or lok == nil and not lerr, lerr or 'listen failed')
+    if not (lok == 0 or lok == true or lok == nil and not lerr) then
+      error(lerr or 'listen failed')
+    end
+    heartbeat = uv.new_timer()
+    if not heartbeat then
+      error('could not create heartbeat timer')
+    end
+    local started, start_err = heartbeat:start(30000, 30000, function()
+      for _, pv in pairs(state.previews) do
+        for client in pairs(pv.clients) do
+          if client:is_closing() then
+            pv.clients[client] = nil
+          else
+            local stream = pv.clients[client]
+            if stream and not stream.writing and stream.pending_bytes == 0 then
+              write_client(pv, client, stream, ': hb\n\n')
+            end
+          end
+        end
+      end
+    end)
+    if not (started == 0 or started == true or started == nil and not start_err) then
+      error(start_err or 'heartbeat timer failed to start')
+    end
   end)
   if not ok then
+    if heartbeat then
+      pcall(heartbeat.close, heartbeat)
+    end
     pcall(tcp.close, tcp)
     return false, ('could not bind %s:%d (%s)'):format(config.host, config.port, err)
   end
   state.tcp = tcp
   state.host = config.host
   state.port = tcp:getsockname().port
-  state.buster = tostring(os.time())
+  state.requested_port = config.port
+  -- A high-resolution value keeps immutable asset URLs fresh even when a
+  -- fixed-port server is stopped and restarted within the same second.
+  state.buster = tostring(uv.hrtime())
 
   -- SSE heartbeat: keeps proxies/browsers from timing out idle streams and
   -- flushes out dead sockets via write errors.
-  state.heartbeat = uv.new_timer()
-  state.heartbeat:start(30000, 30000, function()
-    for _, pv in pairs(state.previews) do
-      for client in pairs(pv.clients) do
-        if client:is_closing() then
-          pv.clients[client] = nil
-        else
-          local wok = pcall(client.write, client, ': hb\n\n', function(werr)
-            if werr then
-              prune_client(client)
-            end
-          end)
-          if not wok then
-            pv.clients[client] = nil
-          end
-        end
-      end
-    end
-  end)
+  state.heartbeat = heartbeat
   return true
+end
+
+---@param config table
+---@return boolean ok, string? err, boolean? changed
+function M.reconfigure(config)
+  if not state.tcp then
+    return true, nil, false
+  end
+  if config.host ~= state.host or config.port ~= state.requested_port then
+    if next(state.previews) then
+      return false, 'host and port cannot change while previews are open; close them first'
+    end
+    M.stop()
+    return M.start(config)
+  end
+  local changed = apply_runtime_config(config)
+  return true, nil, changed
+end
+
+function M.notify_reconfigure()
+  for token in pairs(state.previews) do
+    M.broadcast(token, 'config', '{}')
+  end
 end
 
 ---@param pv mdpv.Preview
@@ -592,12 +935,14 @@ function M.close_preview(token, notify)
   state.previews[token] = nil
   watch.drop(token)
   for sock in pairs(pv.clients) do
-    if notify and not sock:is_closing() then
-      local ok = pcall(sock.write, sock, sse_frame('close', '{}'), function()
-        close_sock(sock)
-      end)
-      if not ok then
-        close_sock(sock)
+    local client = pv.clients[sock]
+    if notify and client and not sock:is_closing() then
+      clear_pending(client)
+      client.closing = true
+      client.close_frame = sse_frame('close', '{}')
+      if not client.writing then
+        local frame, is_close = pending_frame(client)
+        write_client(pv, sock, client, frame, is_close)
       end
     else
       close_sock(sock)
@@ -615,19 +960,17 @@ function M.broadcast(token, event, data)
   if not pv then
     return
   end
+  if next(pv.clients) == nil then
+    return
+  end
+  -- The payload is identical for every client. Build the wire frame once;
+  -- queue_client only replaces/coalesces it when a client is already busy.
   local frame = sse_frame(event, data)
   for sock in pairs(pv.clients) do
     if sock:is_closing() then
       pv.clients[sock] = nil
     else
-      local ok = pcall(sock.write, sock, frame, function(werr)
-        if werr then
-          prune_client(sock)
-        end
-      end)
-      if not ok then
-        pv.clients[sock] = nil
-      end
+      queue_client(pv, sock, event, data, frame)
     end
   end
 end
@@ -652,14 +995,23 @@ function M.stop()
     state.heartbeat:close()
     state.heartbeat = nil
   end
+  local tokens = {}
   for token in pairs(state.previews) do
+    tokens[#tokens + 1] = token
+  end
+  for _, token in ipairs(tokens) do
     M.close_preview(token, true)
   end
   if state.tcp then
     close_sock(state.tcp)
     state.tcp = nil
   end
-  state.host, state.port, state.template = nil, nil, nil
+  for sock in pairs(state.connections) do
+    close_sock(sock)
+  end
+  state.host, state.port, state.requested_port, state.template = nil, nil, nil, nil
+  state.connections = {}
+  state.connection_count = 0
 end
 
 return M

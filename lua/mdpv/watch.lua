@@ -12,9 +12,31 @@ local uv = vim.uv
 local M = {}
 
 local MAX_WATCH_DIRS = 32
+local MAX_WATCH_FILES = 512
+local WATCH_EXT = {
+  png = true,
+  jpg = true,
+  jpeg = true,
+  gif = true,
+  webp = true,
+  avif = true,
+  bmp = true,
+  ico = true,
+  mp4 = true,
+  webm = true,
+  mov = true,
+  mp3 = true,
+  ogg = true,
+  wav = true,
+}
 
----@type table<string, { dirs: table<string, { handle: uv.uv_fs_event_t, files: table<string, string> }>, pending: table<string, true>, timer: uv.uv_timer_t? }>
+---@type table<string, { dirs: table<string, { handle: uv.uv_fs_event_t, files: table<string, string> }>, file_count: integer, pending: table<string, true>, timer: uv.uv_timer_t? }>
 local watched = {}
+
+function M.is_watchable(rel)
+  local ext = rel:match('%.([%w]+)$')
+  return ext and WATCH_EXT[ext:lower()] or false
+end
 
 --- Queue `rel` for the token's next `assets` event (debounced: tools
 --- rewriting a file emit bursts of events).
@@ -52,16 +74,22 @@ end
 --- Watch the directory holding `fpath` (served to the token's preview as the
 --- relative path `rel`) and report changes to that file.
 function M.add(token, fpath, rel)
+  if not M.is_watchable(rel) then
+    return
+  end
   local dir, name = fpath:match('^(.*)/([^/]+)$')
   if not dir or dir == '' then
     return
   end
   local w = watched[token]
   if not w then
-    w = { dirs = {}, pending = {} }
+    w = { dirs = {}, file_count = 0, pending = {} }
     watched[token] = w
   end
   local d = w.dirs[dir]
+  if (not d or not d.files[name]) and w.file_count >= MAX_WATCH_FILES then
+    return
+  end
   if not d then
     if vim.tbl_count(w.dirs) >= MAX_WATCH_DIRS then
       return
@@ -81,6 +109,9 @@ function M.add(token, fpath, rel)
       return
     end
     w.dirs[dir] = d
+  end
+  if not d.files[name] then
+    w.file_count = w.file_count + 1
   end
   d.files[name] = rel
 end

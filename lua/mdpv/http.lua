@@ -73,10 +73,14 @@ function M.head(status, headers)
   return table.concat(lines, '\r\n')
 end
 
---- Write a complete response and close the socket.
-function M.respond(sock, status, headers, body)
-  if status == 304 then
-    body = '' -- a 304 must not carry content (nor a Content-Length claiming so)
+--- Write a complete response and close the socket. For HEAD requests,
+--- `head_only` suppresses the body while preserving the GET Content-Length.
+--- `omit_length` is for responses whose GET body has no finite length (SSE).
+function M.respond(sock, status, headers, body, head_only, omit_length)
+  if status == 304 or status == 204 then
+    body = '' -- 304/204 must not carry content or a Content-Length header
+    headers = headers or {}
+    headers['Content-Length'] = nil
   else
     body = body or (status ~= 200 and status ~= 204 and (M.REASONS[status] or '') or '')
   end
@@ -84,11 +88,11 @@ function M.respond(sock, status, headers, body)
   if not headers['Content-Type'] then
     headers['Content-Type'] = 'text/plain; charset=utf-8'
   end
-  if status ~= 304 then
+  if status ~= 304 and status ~= 204 and not omit_length then
     headers['Content-Length'] = tostring(#body)
   end
   headers['Connection'] = 'close'
-  M.write_and_close(sock, M.head(status, headers) .. body)
+  M.write_and_close(sock, M.head(status, headers) .. (head_only and '' or body))
 end
 
 function M.sse_frame(event, data)
@@ -114,6 +118,16 @@ function M.percent_decode(s)
 end
 
 --- Case-insensitive request-header lookup; `name` must be given lowercase.
+function M.req_headers(head, name)
+  local values = {}
+  for k, v in head:gmatch('\r\n([%w%-]+):[ \t]*([^\r\n]*)') do
+    if k:lower() == name then
+      values[#values + 1] = (v:gsub('%s+$', ''))
+    end
+  end
+  return values
+end
+
 function M.req_header(head, name)
   for k, v in head:gmatch('\r\n([%w%-]+):[ \t]*([^\r\n]*)') do
     if k:lower() == name then
@@ -134,7 +148,7 @@ end
 
 --- Reject relative paths that could escape their base directory.
 function M.is_confined(rel)
-  if rel:find('\0', 1, true) or rel:sub(1, 1) == '/' then
+  if rel:find('\0', 1, true) or rel:find('\\', 1, true) or rel:sub(1, 1) == '/' or rel:match('^%a:') then
     return false
   end
   for seg in rel:gmatch('[^/]+') do

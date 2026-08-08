@@ -9,7 +9,8 @@
 
   // {token, title, md, features, static?, base?} — embedded server-side for
   // an instant first paint.
-  const BOOT = JSON.parse(document.getElementById('mdpv-boot').textContent);
+  const bootEl = document.getElementById('mdpv-boot');
+  const BOOT = JSON.parse(bootEl.textContent);
   const FEATURES = BOOT.features || {};
   // math is false | true | {macros: …} — KaTeX options configured editor-side.
   const MATH_OPTS = (typeof FEATURES.math === 'object' && FEATURES.math) || {};
@@ -33,10 +34,12 @@
   // authoritative copy in a state file and ships it in the shell; it seeds
   // any key this origin hasn't set yet (so an origin's own choices still
   // win), and every change is POSTed back for the next session.
-  const PREFS = JSON.parse(document.getElementById('mdpv-prefs').textContent || '{}');
+  const prefsEl = document.getElementById('mdpv-prefs');
+  const PREFS = JSON.parse(prefsEl.textContent || '{}');
   for (const [key, value] of Object.entries(PREFS)) {
     if (localStorage.getItem(key) === null) localStorage.setItem(key, value);
   }
+  prefsEl.textContent = '';
   function setPref(key, value) {
     localStorage.setItem(key, value);
     fetch(`/prefs/${BOOT.token}`, { method: 'POST', body: JSON.stringify({ [key]: value }) }).catch(() => {});
@@ -240,7 +243,7 @@
     })
     // GitHub's task-list-item classes; live previews render the checkboxes
     // enabled so a click can toggle the source line (see the change listener).
-    .use(window.markdownitTaskLists, { enabled: !BOOT.static })
+    .use(window.markdownitTaskLists, { enabled: !BOOT.static && BOOT.modifiable !== false })
     .use(window.markdownitFootnote);
   if (FEATURES.emoji !== false && window.markdownitEmoji) md.use(window.markdownitEmoji);
   if (FEATURES.math !== false) md.use(mathPlugin);
@@ -1131,11 +1134,14 @@
   // :focus-within, so keyboard users never need the pointer.
   let tocOpenTimer = 0;
   $toc.addEventListener('pointerenter', () => {
+    $toc.classList.remove('pointer-away');
     clearTimeout(tocOpenTimer);
     tocOpenTimer = setTimeout(() => $toc.classList.add('open'), 120);
   });
+  $toc.addEventListener('focusin', () => $toc.classList.remove('pointer-away'));
   $toc.addEventListener('pointerleave', () => {
     clearTimeout(tocOpenTimer);
+    $toc.classList.add('pointer-away');
     $toc.classList.remove('open');
   });
   $outline.addEventListener('click', (ev) => {
@@ -1178,7 +1184,16 @@
   });
 
   // First paint from the embedded boot payload — no SSE round-trip needed.
+  function setTaskAvailability(modifiable) {
+    for (const box of $content.querySelectorAll('input.task-list-item-checkbox')) {
+      box.disabled = !modifiable;
+    }
+  }
+
   if (typeof BOOT.md === 'string') render(BOOT.md);
+  setTaskAvailability(!BOOT.static && BOOT.modifiable !== false);
+  BOOT.md = null;
+  bootEl.remove();
 
   // A .md file rendered through the /f/ route has no buffer behind it:
   // nothing to stream, nothing to follow.
@@ -1309,7 +1324,11 @@
   // --- SSE wiring ----------------------------------------------------------
 
   let docTitle = BOOT.title;
-  const es = new EventSource(`/events/${BOOT.token}`);
+  const es = new EventSource(`/events/${BOOT.token}?since=${encodeURIComponent(BOOT.revision ?? '')}`);
+
+  es.addEventListener('config', () => {
+    location.reload();
+  });
 
   es.addEventListener('update', (ev) => {
     let payload;
@@ -1324,6 +1343,7 @@
     }
     setStatus('live', 'live', 'Connected — updates live as you edit');
     render(typeof payload.md === 'string' ? payload.md : '');
+    if (typeof payload.modifiable === 'boolean') setTaskAvailability(payload.modifiable);
   });
 
   es.addEventListener('scroll', (ev) => {

@@ -439,7 +439,7 @@ body {
  * background layers are scroll shadows (Lea Verou's local-attachment
  * technique): soft inner shading appears at an edge only while more rows
  * hide past it, so a clipped list reads as scrollable. */
-#mdpv-toc:is(.open, :focus-within) #outline-list {
+#mdpv-toc:not(.pointer-away):is(.open, :focus-within) #outline-list {
   padding: 4px;
   background-color: var(--mdpv-bg);
   background-image:
@@ -463,16 +463,16 @@ body {
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
 }
 
-#mdpv-toc:is(.open, :focus-within) #outline-list a {
+#mdpv-toc:not(.pointer-away):is(.open, :focus-within) #outline-list a {
   justify-content: flex-start;
   padding: 3px 10px 3px 12px;
 }
 
-#mdpv-toc:is(.open, :focus-within) .toc-bar {
+#mdpv-toc:not(.pointer-away):is(.open, :focus-within) .toc-bar {
   display: none;
 }
 
-#mdpv-toc:is(.open, :focus-within) .toc-text {
+#mdpv-toc:not(.pointer-away):is(.open, :focus-within) .toc-text {
   display: block;
   animation: mdpv-toc-reveal 0.18s ease;
 }
@@ -490,42 +490,42 @@ body {
   --mdpv-toc-slide: -6px;
 }
 
-#mdpv-toc:is(.open, :focus-within) #outline-list a:hover {
+#mdpv-toc:not(.pointer-away):is(.open, :focus-within) #outline-list a:hover {
   color: var(--mdpv-fg);
   background-color: var(--mdpv-bg-subtle);
 }
 
-#mdpv-toc:is(.open, :focus-within) #outline-list a.active {
+#mdpv-toc:not(.pointer-away):is(.open, :focus-within) #outline-list a.active {
   color: var(--mdpv-accent-fg);
   background-color: color-mix(in srgb, var(--mdpv-accent-fg) 12%, transparent);
 }
 
 /* Heading levels read two ways when expanded: typographic tier (h1
  * heaviest, fading to muted) and a 12px indent per level. */
-#mdpv-toc:is(.open, :focus-within) #outline-list .outline-h1 {
+#mdpv-toc:not(.pointer-away):is(.open, :focus-within) #outline-list .outline-h1 {
   font-weight: 600;
   color: var(--mdpv-fg);
 }
 
-#mdpv-toc:is(.open, :focus-within) #outline-list .outline-h2 {
+#mdpv-toc:not(.pointer-away):is(.open, :focus-within) #outline-list .outline-h2 {
   padding-left: 24px;
   font-weight: 500;
   color: color-mix(in srgb, var(--mdpv-fg) 60%, var(--mdpv-fg-muted));
 }
 
-#mdpv-toc:is(.open, :focus-within) #outline-list .outline-h3 {
+#mdpv-toc:not(.pointer-away):is(.open, :focus-within) #outline-list .outline-h3 {
   padding-left: 36px;
 }
 
-#mdpv-toc:is(.open, :focus-within) #outline-list .outline-h4 {
+#mdpv-toc:not(.pointer-away):is(.open, :focus-within) #outline-list .outline-h4 {
   padding-left: 48px;
 }
 
-#mdpv-toc:is(.open, :focus-within) #outline-list .outline-h5 {
+#mdpv-toc:not(.pointer-away):is(.open, :focus-within) #outline-list .outline-h5 {
   padding-left: 60px;
 }
 
-#mdpv-toc:is(.open, :focus-within) #outline-list .outline-h6 {
+#mdpv-toc:not(.pointer-away):is(.open, :focus-within) #outline-list .outline-h6 {
   padding-left: 72px;
 }
 
@@ -860,7 +860,7 @@ body.mdpv-wide main {
     transition: none;
   }
 
-  #mdpv-toc:is(.open, :focus-within) .toc-text {
+  #mdpv-toc:not(.pointer-away):is(.open, :focus-within) .toc-text {
     animation: none;
   }
 }

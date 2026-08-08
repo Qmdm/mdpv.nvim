@@ -72,6 +72,11 @@ Calling setup() is optional. Defaults: >lua
     scroll_sync = true,    -- see |mdpv-sync|; true | false | 'both'
   })
 <
+Calling setup() again applies validated changes to previews that are already
+open; pages reload when renderer, theme, or sync settings change. `host` and
+`port` cannot change while a preview is open. Close the previews first to
+rebind the server without invalidating a live private URL.
+
 ==============================================================================
 5. LUA API                                                       *mdpv-api*
 
@@ -158,7 +163,10 @@ FILES & LINKS                                                 *mdpv-files*
 Relative images and links resolve against the file's directory (and its
 subtree; links pointing above it are not served). A relative link to
 another `.md` file renders as a page too; append `?raw` for the raw file.
-Media is served with byte ranges, so video and audio can seek.
+Media is served with byte ranges, so video and audio can seek. Symlinks are
+resolved and rejected when their target escapes the file's directory. Linked
+HTML/XHTML downloads instead of executing in the preview origin, and all raw
+file responses carry restrictive browser security headers.
 
 LIVE IMAGE RELOAD                                            *mdpv-images*
 
@@ -193,8 +201,9 @@ meets the menu button in a corner, it steps aside so the two never overlap.
 SECURITY                                                   *mdpv-security*
 
 Raw HTML is sanitized with DOMPurify; pages carry a strict CSP; the server
-binds localhost only and every route is token-gated. Path traversal (`..`)
-is rejected on all file routes.
+binds localhost only, and private preview/file/sync routes are token-gated.
+The shared status page exposes no preview names, URLs, or tokens. Path
+traversal (`..`) and escaping symlinks are rejected on all file routes.
 
 ==============================================================================
 8. HEALTH                                                     *mdpv-health*

@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Neovim
+        uses: rhysd/action-setup-vim@v1
+        with:
+          version: v0.12.4
+          neovim: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Set up Chromium
+        id: chrome
+        uses: browser-actions/setup-chrome@v2
+        with:
+          chrome-version: stable
+          install-dependencies: true
+
+      - name: Install pinned static-analysis tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          tool_root="$RUNNER_TEMP/mdpv-tools"
+          mkdir -p "$tool_root/bin" "$tool_root/lua-language-server"
+
+          curl -fsSL \
+            -o "$RUNNER_TEMP/stylua.zip" \
+            https://github.com/JohnnyMorganz/StyLua/releases/download/v2.5.2/stylua-linux-x86_64.zip
+          unzip -q "$RUNNER_TEMP/stylua.zip" -d "$tool_root/bin"
+          chmod +x "$tool_root/bin/stylua"
+
+          curl -fsSL \
+            -o "$RUNNER_TEMP/lua-language-server.tar.gz" \
+            https://github.com/LuaLS/lua-language-server/releases/download/3.19.0/lua-language-server-3.19.0-linux-x64.tar.gz
+          tar -xzf "$RUNNER_TEMP/lua-language-server.tar.gz" -C "$tool_root/lua-language-server"
+
+          echo "$tool_root/bin" >> "$GITHUB_PATH"
+          echo "$tool_root/lua-language-server/bin" >> "$GITHUB_PATH"
+
+      - name: Run formatting, syntax, and LuaLS checks
+        run: ./scripts/check.sh
+
+      - name: Run end-to-end and browser suites
+        env:
+          MDPV_CHROME: ${{ steps.chrome.outputs.chrome-path }}
+        run: |
+          nvim --clean --headless -l tests/e2e.lua
+          nvim --clean --headless -l tests/fidelity.lua
+          nvim --clean --headless -l tests/sync.lua
+          nvim --clean --headless -l tests/interact.lua

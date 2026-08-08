@@ -69,10 +69,10 @@ only non-authored files.
 
 | Route | Serves |
 | --- | --- |
-| `GET /` | index of active previews |
+| `GET /` | capability-free server status page; never lists preview names, URLs, or tokens |
 | `GET /p/<token>` | page shell with the buffer content embedded (instant first paint) |
-| `GET /events/<token>` | SSE stream: `update` events (JSON `{token,title,md,features}`), `scroll` events (cursor line), `assets` events (served files changed on disk), `close` event, 30 s heartbeat comments |
-| `GET /f/<token>/<path>` | files resolved against the buffer's directory, streamed with byte ranges + `Last-Modified`/304 revalidation; `.md` files render as static pages (`?raw` for bytes) |
+| `GET /events/<token>` | SSE stream: revisioned `update` events (JSON `{token,title,md,modifiable,revision,features}`), `scroll`, coalesced `assets`, `config`, `close`, and 30 s heartbeat comments |
+| `GET /f/<token>/<path>` | realpath-confined files resolved against the buffer's directory, streamed with byte ranges + `Last-Modified`/304 revalidation; `.md` renders as a static page (`?raw` for bytes), while active HTML/XHTML downloads |
 | `POST /sync/<token>` | browser → editor: JSON `{line}` moves the cursor (sent while the page's move-cursor-on-scroll switch is on); JSON `{toggle: {line, checked}}` flips a task checkbox |
 | `POST /prefs/<token>` | browser → editor: JSON object of page-preference changes (theme, outline, sync switches, corners), whitelisted and persisted to `stdpath("state")/mdpv-prefs.json` |
 | `GET /assets/<path>` | plugin frontend, `Cache-Control: immutable` + per-session `?v=` buster |
@@ -80,9 +80,11 @@ only non-authored files.
 ### Data flow
 
 `nvim_buf_attach(on_lines)` → re-arm 150 ms `uv_timer` → (debounce elapses) →
-`vim.schedule` → `nvim_buf_get_lines` → `vim.json.encode` → one SSE frame
-written to every attached client → browser re-renders (~10 ms for a typical
-README), restoring scroll position and skipping if content is unchanged.
+`vim.schedule` → `nvim_buf_get_lines` → cached `vim.json.encode` payload → one
+SSE frame queued for every attached client → browser re-renders (~10 ms for a
+typical README), restoring scroll position and skipping if content is
+unchanged. Each client queue retains only the newest update/scroll event and
+merges changed asset paths, so a slow tab cannot create an unbounded backlog.
 When no SSE client is attached, the pipeline stops at the timer: nothing is
 read or encoded.
 
@@ -300,11 +302,14 @@ browsing a repo on GitHub.
 **Instant first paint.** The page embeds the buffer as a
 `<script type="application/json">` data block (non-executable, hence CSP-safe;
 `<` escaped as `\u003c` against `</script>` breakout) and renders at load.
-SSE then only carries changes. Bonus: rendering is deterministic at the
-`load` event, which makes DOM-dump testing reliable.
+The client connects to SSE with the boot payload's buffer revision, avoiding a
+duplicate initial update when nothing changed, and removes the source data
+block after rendering so the markdown is not retained twice. SSE then only
+carries changes. Bonus: rendering is deterministic at the `load` event, which
+makes DOM-dump testing reliable.
 
 **Multiple previews = tokens, not servers.** One lazily-started server;
-each buffer registers a 128-bit hex token namespacing its three routes.
+each buffer registers a 128-bit hex token namespacing its private routes.
 Closing a preview 404s its routes and sends a final SSE `close` event so the
 tab shows "preview closed" instead of silently reconnecting forever. The
 server auto-stops with the last preview (`auto_stop`).
@@ -323,23 +328,29 @@ plugins). `on_lines` fires for every mutation; under textlock it only re-arms
 a `uv_timer`, so it's safe and O(1) per keystroke. Autocmds remain for
 lifecycle only (`BufFilePost` rename, `BufUnload`/`BufWipeout` auto-close).
 
-**Security posture.** Binds `127.0.0.1`; tokens are `uv.random` 128-bit
-(URL knowledge = capability); strict CSP (`script-src 'self'`, no inline
-scripts — boot data is a JSON block); DOMPurify on rendered HTML. Both the
-`/assets/` and `/f/<token>/` routes reject NUL bytes, absolute paths, and any
-`..` segment, so a token holder cannot traverse out of the plugin's asset
-directory or the buffer's own directory. The trade-off is deliberate: a
-relative link pointing *above* the file's directory (`../sibling/x.png`) does
-not resolve — the safe choice for a loopback server that would otherwise hand
-arbitrary files to anyone holding the token, and there is no repo-root concept
-here to bound traversal against.
+**Security posture.** Binds `127.0.0.1`; tokens are `uv.random` 128-bit (and
+preview creation fails instead of falling back to weak randomness). URL
+knowledge is the capability, so the shared status route deliberately exposes
+no preview metadata or links. Pages use a strict CSP (`script-src 'self'`, no
+inline scripts — boot data is a JSON block) and DOMPurify sanitizes rendered
+HTML. Both `/assets/` and `/f/<token>/` reject NUL bytes, absolute paths, and
+any `..` segment; final targets are realpath-checked as well, so escaping
+symlinks cannot leave the plugin assets or buffer directory. Raw workspace
+files receive `nosniff`, no-referrer, same-origin resource, frame-denial, and
+restrictive CSP headers; HTML/XHTML is forced to an attachment/octet stream so
+it cannot become same-origin executable content. The trade-off is deliberate:
+a relative link pointing *above* the file's directory (`../sibling/x.png`)
+does not resolve, because there is no repo-root concept here to bound broader
+access against.
 
 ## 5. Performance notes
 
 - Server work per edit burst: one timer re-arm per `on_lines` (no allocation),
   then a single lines-join + JSON encode after 150 ms of quiet — and only if
   an SSE client is actually attached; unwatched previews cost nothing per
-  edit (a client connecting later gets a fresh push from the events route).
+  edit. The serialized payload is cached by changedtick, title, modifiable
+  state, and configuration generation, so page boot and SSE handoff do not
+  repeat the buffer read/encode.
 - No markdown parsing in Neovim, ever. The page shell template is read from
   disk once per server run.
 - Served files stream in 256 KiB chunks with write-callback backpressure (no
@@ -358,13 +369,19 @@ here to bound traversal against.
   walking and measuring every mapped block per event.
 - Static assets: `immutable` + per-session `?v=` — one fetch per session,
   correct across plugin updates.
-- SSE heartbeat every 30 s doubles as dead-socket collection; closed tabs
-  are also pruned on read-EOF.
+- SSE queues are bounded at 8 MiB per client and coalesce superseded updates,
+  scroll positions, and asset paths. Heartbeats skip clients with pending
+  writes; closed tabs are pruned on read-EOF.
+- Incomplete requests time out after 3 s and the server caps active TCP
+  connections at 256, sweeping asynchronously closed handles before applying
+  the limit. Request headers and sync bodies are capped at 16 KiB and 4 KiB.
+- Live reload watches only image/audio/video files that were successfully
+  opened, with limits of 32 directories and 512 files per preview.
 
 ## 6. Testing
 
-- `tests/e2e.lua` (96 checks): real Neovim + curl against the live server —
-  routes, headers, CSP, `..` traversal rejection on both `/assets/` and `/f/`,
+- `tests/e2e.lua` (114 checks): real Neovim + curl against the live server —
+  routes, headers, CSP, token redaction, `..` and escaping-symlink rejection,
   byte ranges (206/416, suffix + open-ended + multi-range degradation),
   `If-Modified-Since` → 304, HEAD, SSE initial + live-edit push,
   scroll events, `POST /sync` cursor moves (incl. clamping, bad payloads,
@@ -373,8 +390,9 @@ here to bound traversal against.
   state file, shipped in the shell, junk keys/values dropped, surviving a
   server restart), the `assets` event when a served image changes on disk,
   KaTeX macros in the feature flags, static `.md` pages + `?raw`,
-  multi-preview isolation, re-open reuse, filetype guard, auto-close on
-  wipeout, auto-stop, restart, `:Preview` command surface.
+  runtime reconfiguration, request timeout/framing/capacity, media-watch
+  filtering, multi-preview isolation, re-open attachment cleanup, filetype
+  guard, auto-close on wipeout, auto-stop, restart, `:Preview` command surface.
 - `tests/fidelity.lua` (66 checks): headless Chromium `--dump-dom` of a live
   preview asserting GitHub markup (alert divs + octicons, Obsidian callouts —
   extra types, aliases, custom titles, `<details>` folding, nesting —
@@ -390,9 +408,10 @@ here to bound traversal against.
   prove scroll sync in both directions against a real page: a cursor move
   scrolls the browser (and marks the cursor block; a heading line updates the
   URL hash), and a synthetic user scroll moves the cursor.
-- `tests/interact.lua` (5 checks): a real, trusted click on a task checkbox
+- `tests/interact.lua` (7 checks): a real, trusted click on a task checkbox
   through CDP — POST to the editor, buffer line flips, and the re-render
-  confirms the checked state back in the page.
+  confirms the checked state back in the page; a read-only buffer's checkbox
+  remains disabled in the browser.
 - All run headless: `nvim --clean --headless -l tests/<file>.lua`.
 
 ## 7. Future work

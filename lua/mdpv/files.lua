@@ -10,6 +10,19 @@ local M = {}
 local MAX_FILE_BYTES = 64 * 1024 * 1024 -- refuse to buffer files larger than this in memory
 local CHUNK_BYTES = 256 * 1024 -- streamed file responses go out in pieces this size
 
+local ACTIVE_DOCUMENT_EXT = { html = true, htm = true, xhtml = true }
+local FILE_CSP = table.concat({
+  "default-src 'none'",
+  "base-uri 'none'",
+  "object-src 'none'",
+  "script-src 'none'",
+  "connect-src 'none'",
+  "style-src 'unsafe-inline'",
+  'img-src data:',
+  'media-src data:',
+  'font-src data:',
+}, '; ')
+
 local function http_date(sec)
   return os.date('!%a, %d %b %Y %H:%M:%S GMT', sec)
 end
@@ -38,6 +51,29 @@ function M.read(path, cb)
         end
         cb(data)
       end)
+    end)
+  end)
+end
+
+--- Resolve `path` and prove that its final target remains under `base`.
+--- Returning the resolved target also prevents the subsequent open from
+--- following the originally requested symlink outside the checked subtree.
+function M.resolve_confined(base, path, cb)
+  uv.fs_realpath(base, function(berr, real_base)
+    if berr or not real_base then
+      return cb(nil, 'missing')
+    end
+    uv.fs_realpath(path, function(err, real_path)
+      if err or not real_path then
+        return cb(nil, 'missing')
+      end
+      local normalized_base = vim.fs.normalize(real_base)
+      local normalized_path = vim.fs.normalize(real_path)
+      local base_prefix = normalized_base:sub(-1) == '/' and normalized_base or normalized_base .. '/'
+      if normalized_path ~= normalized_base and normalized_path:sub(1, #base_prefix) ~= base_prefix then
+        return cb(nil, 'outside')
+      end
+      cb(real_path)
     end)
   end)
 end
@@ -129,32 +165,59 @@ end
 --- ranges so media can seek, and Last-Modified revalidation so a reload of an
 --- unchanged file costs a 304 instead of a re-download.
 ---@param req { head_only: boolean?, range: string?, if_modified_since: string? }?
-function M.serve(sock, path, cache_control, req)
+---@param opts { secure: boolean?, on_open: fun(path: string, stat: table)? }?
+function M.serve(sock, path, cache_control, req, opts)
   req = req or {}
+  opts = opts or {}
   local ext = path:match('%.([%w]+)$')
-  local mime = http.MIME[ext and ext:lower() or ''] or 'application/octet-stream'
+  ext = ext and ext:lower() or ''
+  local active_document = opts.secure and ACTIVE_DOCUMENT_EXT[ext]
+  local mime = active_document and 'application/octet-stream' or http.MIME[ext] or 'application/octet-stream'
+
+  local function secure(headers)
+    if not opts.secure then
+      return headers
+    end
+    headers['Content-Security-Policy'] = FILE_CSP
+    headers['Cross-Origin-Resource-Policy'] = 'same-origin'
+    headers['Referrer-Policy'] = 'no-referrer'
+    headers['X-Content-Type-Options'] = 'nosniff'
+    headers['X-Frame-Options'] = 'DENY'
+    if active_document then
+      headers['Content-Disposition'] = 'attachment'
+    end
+    return headers
+  end
+
   uv.fs_open(path, 'r', 292, function(err, fd) -- 292 = 0444
     if err or not fd then
-      return http.respond(sock, 404)
+      return http.respond(sock, 404, secure({}), nil, req.head_only)
     end
     uv.fs_fstat(fd, function(serr, stat)
       if serr or not stat or stat.type ~= 'file' then
         uv.fs_close(fd, function() end)
-        return http.respond(sock, 404)
+        return http.respond(sock, 404, secure({}), nil, req.head_only)
+      end
+      if opts.on_open then
+        pcall(opts.on_open, path, stat)
       end
       local modified = http_date(stat.mtime.sec)
       if req.if_modified_since == modified then
         uv.fs_close(fd, function() end)
-        return http.respond(sock, 304, {
-          ['Content-Type'] = mime,
-          ['Cache-Control'] = cache_control or 'no-cache',
-          ['Last-Modified'] = modified,
-        })
+        return http.respond(
+          sock,
+          304,
+          secure({
+            ['Content-Type'] = mime,
+            ['Cache-Control'] = cache_control or 'no-cache',
+            ['Last-Modified'] = modified,
+          })
+        )
       end
       local first, last = parse_range(req.range, stat.size)
       if first == 'unsatisfiable' then
         uv.fs_close(fd, function() end)
-        return http.respond(sock, 416, { ['Content-Range'] = 'bytes */' .. stat.size })
+        return http.respond(sock, 416, secure({ ['Content-Range'] = 'bytes */' .. stat.size }), nil, req.head_only)
       end
       local headers = {
         ['Content-Type'] = mime,
@@ -163,6 +226,7 @@ function M.serve(sock, path, cache_control, req)
         ['Accept-Ranges'] = 'bytes',
         ['Connection'] = 'close',
       }
+      secure(headers)
       local status = 200
       if first then
         status = 206

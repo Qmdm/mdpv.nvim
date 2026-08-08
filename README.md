@@ -62,7 +62,9 @@ styled with GitHub's actual CSS.
 - Any number of previews at once on one shared, lazily-started server; each
   buffer gets an unguessable URL; previews auto-close with their buffer and
   the server auto-stops with the last preview.
-- Localhost-only, token-gated routes, strict CSP, DOMPurify on raw HTML.
+- Localhost-only; private preview/file routes use unguessable tokens, the
+  shared status page exposes none, and strict CSP plus DOMPurify constrain
+  rendered and linked content.
 
 ## Requirements
 
@@ -134,6 +136,11 @@ require('mdpv').setup({
 })
 ```
 
+Calling `setup()` again applies validated changes to previews that are already
+open; pages reload when renderer, theme, or sync settings change. `host` and
+`port` cannot change while a preview is open, because existing private URLs
+would become invalid. Close the previews first to rebind the server.
+
 `:checkhealth mdpv` verifies the runtime and vendored assets.
 
 ## Non-goals / current limitations
@@ -144,7 +151,8 @@ require('mdpv').setup({
   than rendered as a table.
 - Relative links are confined to the previewed file's own directory and its
   subtree; a link pointing *above* it (`../sibling.md`) is not served — the
-  file route blocks `..` traversal.
+  file route blocks `..` traversal and symlinks whose resolved target escapes
+  that subtree.
 
 ## Development
 

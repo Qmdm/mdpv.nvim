@@ -164,6 +164,20 @@ async function run(wsUrl) {
     return die('TIMEOUT: checkbox state never came back from the editor', 1);
   }
 
+  if (mode === 'readonly-task') {
+    for (let i = 0; i < 100; i++) {
+      const disabled = await evaluate(
+        '!!document.querySelector("#content input.task-list-item-checkbox:disabled")',
+      );
+      if (disabled) {
+        console.log('READONLY');
+        return die('', 0);
+      }
+      await sleep(100);
+    }
+    return die('TIMEOUT: read-only checkbox was enabled', 1);
+  }
+
   if (mode === 'user-scroll') {
     // Browser -> editor: scroll like a user; app.js should POST the line.
     await sleep(1500); // clear any programmatic-scroll suppression window
