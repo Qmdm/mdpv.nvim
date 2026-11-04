@@ -37,6 +37,9 @@ styled with GitHub's actual CSS.
   on, and parks the URL hash on the heading you're editing (a ready-made deep
   link). The reverse direction — page scrolls moving the cursor — is a switch
   in the page menu; `scroll_sync = 'both'` turns it on by default.
+- **Follow buffer** — with `follow_buffer = true`, the preview tracks the
+  buffer you switch to: enter another markdown buffer and the same browser
+  tab follows, instead of opening a second preview.
 - **Clickable task lists** — tick a checkbox in the preview and the
   `- [ ]`/`- [x]` flips on that line in your buffer.
 - **Live image reload** — regenerate a screenshot or diagram on disk and
@@ -133,6 +136,7 @@ require('mdpv').setup({
   attachment_dirs = {},    -- dirs searched by bare filename for ![[name]] embeds
                            -- that live elsewhere (e.g. an Obsidian attachment
                            -- folder)
+  follow_buffer = false,   -- the preview follows the current buffer on BufEnter
   scroll_sync = true,      -- preview follows the cursor; both directions are
                            -- in-page toggles — 'both' just defaults the
                            -- "page scrolls move the cursor" one to on

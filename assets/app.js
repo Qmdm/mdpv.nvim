@@ -1330,6 +1330,19 @@
     location.reload();
   });
 
+  // Follow-buffer switch: the server asks this tab to move to the new preview.
+  es.addEventListener('redirect', (ev) => {
+    let payload;
+    try {
+      payload = JSON.parse(ev.data);
+    } catch (_) {
+      return;
+    }
+    if (typeof payload.url === 'string' && payload.url) {
+      location.href = payload.url;
+    }
+  });
+
   es.addEventListener('update', (ev) => {
     let payload;
     try {

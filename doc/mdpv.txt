@@ -71,6 +71,7 @@ Calling setup() is optional. Defaults: >lua
     reload_images = true,  -- refresh images in previews on disk change
     attachment_dirs = {},  -- fallback dirs for ![[name]] embeds not next to
                            -- the note (e.g. an Obsidian attachment folder)
+    follow_buffer = false, -- preview follows the current buffer (BufEnter)
     scroll_sync = true,    -- see |mdpv-sync|; true | false | 'both'
   })
 <
@@ -91,6 +92,10 @@ rebind the server without invalidating a live private URL.
 
   require('mdpv').toggle({bufnr})                              *mdpv.toggle()*
       Open a preview if none is live for {bufnr}, otherwise close it.
+
+  require('mdpv').follow({bufnr})                              *mdpv.follow()*
+      Switch the follow preview to {bufnr} (default: current buffer). Only
+      meaningful when follow_buffer is enabled.
 
   require('mdpv').stop()                                         *mdpv.stop()*
       Close all previews and stop the server.
@@ -179,6 +184,15 @@ LIVE IMAGE RELOAD                                            *mdpv-images*
 Images and media the page has loaded are watched on disk; regenerating one
 (a screenshot, a rendered diagram) refreshes it in place in every open
 preview. Disable with `reload_images = false`.
+
+FOLLOW BUFFER                                                *mdpv-follow*
+
+`follow_buffer = true` makes the one open preview track the buffer you switch
+to (BufEnter): open a preview on a note, then enter another markdown buffer
+and the same browser tab redirects to it instead of opening a second one.
+Non-markdown buffers leave the preview where it is. The first preview must be
+opened manually — `follow_buffer` redirects an existing preview, it does not
+auto-open one.
 
 THE FLOATING MENU                                              *mdpv-menu*
 

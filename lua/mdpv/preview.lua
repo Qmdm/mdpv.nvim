@@ -381,8 +381,10 @@ end
 
 ---@param bufnr integer
 ---@param config table
+---@param silent boolean? skip the closing SSE event (the client is being
+--- redirected elsewhere and does not need the "closed" page)
 ---@return boolean closed
-function M.close(bufnr, config)
+function M.close(bufnr, config, silent)
   local pv = M.previews[bufnr]
   if not pv then
     return false
@@ -395,7 +397,7 @@ function M.close(bufnr, config)
     pv.scroll_timer:close()
   end
   pcall(vim.api.nvim_del_augroup_by_id, pv.augroup)
-  server.close_preview(pv.token, true)
+  server.close_preview(pv.token, not silent)
   if config.auto_stop and vim.tbl_isempty(M.previews) then
     server.stop()
   end

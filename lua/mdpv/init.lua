@@ -19,12 +19,31 @@ local defaults = {
   wikilinks = true, -- [[page]] / [[page|alias]] / ![[img]] resolve like Obsidian
   reload_images = true, -- watch served files; changed images refresh in open previews
   attachment_dirs = {}, -- fallback dirs for bare-name embeds (![[name.png]])
+  follow_buffer = false, -- preview follows the current buffer on BufEnter
   -- false: off | true: browser follows the cursor line (toggleable in-page)
   -- | 'both': additionally, scrolling the page moves the cursor
   scroll_sync = true,
 }
 
 M.config = vim.deepcopy(defaults)
+
+---@type integer? bufnr the buffer the follow preview currently renders
+local follow_buf = nil
+local follow_group = vim.api.nvim_create_augroup('mdpv.follow', { clear = true })
+
+local function on_buf_enter()
+  if not follow_buf then
+    return
+  end
+  local bufnr = vim.api.nvim_get_current_buf()
+  if follow_buf == bufnr then
+    return
+  end
+  if not vim.tbl_contains(M.config.filetypes, vim.bo[bufnr].filetype) then
+    return
+  end
+  M.follow(bufnr)
+end
 
 ---@param opts table?
 function M.setup(opts)
@@ -63,6 +82,7 @@ function M.setup(opts)
   for i, dir in ipairs(config.attachment_dirs) do
     vim.validate(('config.attachment_dirs[%d]'):format(i), dir, 'string')
   end
+  vim.validate('config.follow_buffer', config.follow_buffer, 'boolean')
   vim.validate('config.scroll_sync', config.scroll_sync, function(t)
     return t == true or t == false or t == 'both'
   end, "true, false or 'both'")
@@ -83,6 +103,10 @@ function M.setup(opts)
     if server_changed or preview_changed then
       server.notify_reconfigure()
     end
+  end
+  vim.api.nvim_clear_autocmds({ group = follow_group })
+  if config.follow_buffer then
+    vim.api.nvim_create_autocmd('BufEnter', { group = follow_group, callback = on_buf_enter })
   end
   M.config = config
 end
@@ -135,7 +159,45 @@ function M.open(bufnr, opts)
   if M.config.open_browser then
     open_in_browser(url)
   end
+  if M.config.follow_buffer then
+    follow_buf = bufnr
+  end
   notify((already and 'preview already live: %s' or 'preview: %s'):format(url))
+  return url
+end
+
+--- Switch the follow preview to a different buffer. Redirects the already
+--- open browser tab, then tears down the previous preview once the redirect
+--- frame has flushed — closing immediately would drop the queued SSE frame
+--- before it reaches the socket.
+---@param bufnr integer?
+---@return string? url
+function M.follow(bufnr)
+  bufnr = resolve_buf(bufnr)
+  if not bufnr then
+    return nil
+  end
+  local preview = require('mdpv.preview')
+  local server = require('mdpv.server')
+
+  local url, err = preview.open(bufnr, M.config)
+  if not url then
+    notify(err or 'failed to switch preview', vim.log.levels.ERROR)
+    return nil
+  end
+
+  local old = follow_buf
+  if old and old ~= bufnr then
+    local old_pv = preview.previews[old]
+    if old_pv then
+      server.broadcast(old_pv.token, 'redirect', vim.json.encode({ url = url }))
+    end
+    vim.defer_fn(function()
+      preview.close(old, M.config, true)
+    end, 50)
+  end
+
+  follow_buf = bufnr
   return url
 end
 
@@ -143,6 +205,9 @@ end
 function M.close(bufnr)
   bufnr = resolve_buf(bufnr)
   if bufnr and require('mdpv.preview').close(bufnr, M.config) then
+    if follow_buf == bufnr then
+      follow_buf = nil
+    end
     notify('preview closed')
   else
     notify('no preview for this buffer', vim.log.levels.WARN)
@@ -162,6 +227,7 @@ end
 --- Stop everything: all previews and the server.
 function M.stop()
   require('mdpv.preview').close_all(M.config)
+  follow_buf = nil
   notify('server stopped')
 end
 
