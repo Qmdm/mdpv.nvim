@@ -580,6 +580,17 @@ body.mdpv-wide main {
   border-radius: 6px;
 }
 
+/* Center standalone images like Obsidian; inline emoji stay inline. */
+.markdown-body img {
+  display: block;
+  margin: 0 auto;
+}
+
+.markdown-body g-emoji img {
+  display: inline;
+  margin: 0;
+}
+
 @media (max-width: 767px) {
   main {
     padding: 0 0 32px;
