@@ -69,6 +69,8 @@ Calling setup() is optional. Defaults: >lua
     emoji = true,          -- :shortcode: expansion
     wikilinks = true,      -- [[page]] links + ![[image]] embeds
     reload_images = true,  -- refresh images in previews on disk change
+    attachment_dirs = {},  -- fallback dirs for ![[name]] embeds not next to
+                           -- the note (e.g. an Obsidian attachment folder)
     scroll_sync = true,    -- see |mdpv-sync|; true | false | 'both'
   })
 <
@@ -139,6 +141,10 @@ WIKILINKS                                                 *mdpv-wikilinks*
 `[[page]]` resolves to `page.md` next to the file, with `[[page|alias]]`,
 `[[page#heading]]`, and image embeds `![[img.png]]`. Set
 `wikilinks = false` to render them literally, like GitHub outside wikis.
+
+Image embeds resolve relative to the note first. When a bare `![[name]]` is
+not next to the note, the file is looked up by filename in `attachment_dirs` —
+point it at your Obsidian attachment folder.
 
 TASK LISTS                                               *mdpv-checkboxes*
 

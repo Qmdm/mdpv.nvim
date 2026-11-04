@@ -18,6 +18,7 @@ local defaults = {
   emoji = true, -- expand :shortcodes: like GitHub
   wikilinks = true, -- [[page]] / [[page|alias]] / ![[img]] resolve like Obsidian
   reload_images = true, -- watch served files; changed images refresh in open previews
+  attachment_dirs = {}, -- fallback dirs for bare-name embeds (![[name.png]])
   -- false: off | true: browser follows the cursor line (toggleable in-page)
   -- | 'both': additionally, scrolling the page moves the cursor
   scroll_sync = true,
@@ -57,6 +58,11 @@ function M.setup(opts)
   vim.validate('config.emoji', config.emoji, 'boolean')
   vim.validate('config.wikilinks', config.wikilinks, 'boolean')
   vim.validate('config.reload_images', config.reload_images, 'boolean')
+  vim.validate('config.attachment_dirs', config.attachment_dirs, 'table')
+  vim.validate('config.attachment_dirs', config.attachment_dirs, vim.islist, 'a list of directory strings')
+  for i, dir in ipairs(config.attachment_dirs) do
+    vim.validate(('config.attachment_dirs[%d]'):format(i), dir, 'string')
+  end
   vim.validate('config.scroll_sync', config.scroll_sync, function(t)
     return t == true or t == false or t == 'both'
   end, "true, false or 'both'")

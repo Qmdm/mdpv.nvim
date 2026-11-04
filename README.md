@@ -130,6 +130,9 @@ require('mdpv').setup({
   emoji = true,            -- :shortcode: expansion
   wikilinks = true,        -- [[page]] links + ![[image]] embeds, Obsidian style
   reload_images = true,    -- refresh images in open previews when they change on disk
+  attachment_dirs = {},    -- dirs searched by bare filename for ![[name]] embeds
+                           -- that live elsewhere (e.g. an Obsidian attachment
+                           -- folder)
   scroll_sync = true,      -- preview follows the cursor; both directions are
                            -- in-page toggles — 'both' just defaults the
                            -- "page scrolls move the cursor" one to on

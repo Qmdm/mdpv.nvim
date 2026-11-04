@@ -51,6 +51,7 @@ local state = {
   features = { math = true, mermaid = true, emoji = true, wikilinks = true },
   template = nil, ---@type string? assets/index.html, read once per server run
   reload_images = true, -- watch served files and push `assets` events on change
+  attachment_dirs = {}, ---@type string[] fallback dirs for bare-name embeds
   prefs = {}, ---@type table<string, string> page preferences, mirrored to disk
   connections = {}, ---@type table<uv.uv_tcp_t, true>
   connection_count = 0,
@@ -100,6 +101,7 @@ local function apply_runtime_config(config)
   state.theme = config.theme
   state.features = features
   state.reload_images = config.reload_images ~= false
+  state.attachment_dirs = config.attachment_dirs or {}
   if old_reload and not state.reload_images then
     for token in pairs(state.previews) do
       watch.drop(token)
@@ -441,6 +443,36 @@ local function route_index(sock, req)
   respond(sock, 200, page_headers(MIME.html), body, req.head_only)
 end
 
+-- Resolve a preview-relative file. When the name is absent next to the note,
+-- look it up by bare filename in the attachment directories — Obsidian
+-- `![[name.png]]` embeds carry no path, so the attachment folder is the
+-- fallback search space.
+local function resolve_preview_file(pv, frel, cb)
+  files.resolve_confined(pv.dir, pv.dir .. '/' .. frel, function(real, err)
+    if real then
+      return cb(real, nil)
+    end
+    local fname = frel:match('[^/]+$')
+    local dirs = state.attachment_dirs
+    local i = 0
+    local function try_next()
+      i = i + 1
+      local adir = dirs[i]
+      if not adir then
+        return cb(nil, err)
+      end
+      files.resolve_confined(adir, adir .. '/' .. fname, function(real2, err2)
+        if real2 then
+          cb(real2, nil)
+        else
+          try_next()
+        end
+      end)
+    end
+    try_next()
+  end)
+end
+
 local function handle_request(sock, head, body)
   local method, target = head:match('^(%u+)%s+(%S+)%s+HTTP/1%.[01]\r\n')
   if not method then
@@ -511,8 +543,7 @@ local function handle_request(sock, head, body)
     if not http.is_confined(frel) then
       return respond(sock, 403, nil, nil, req.head_only)
     end
-    local fpath = pv.dir .. '/' .. frel
-    return files.resolve_confined(pv.dir, fpath, function(real, err)
+    return resolve_preview_file(pv, frel, function(real, err)
       if not real then
         return respond(sock, err == 'outside' and 403 or 404, nil, nil, req.head_only)
       end
