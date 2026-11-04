@@ -71,12 +71,14 @@ Calling setup() is optional. Defaults: >lua
     reload_images = true,  -- refresh images in previews on disk change
     attachment_dirs = {},  -- fallback dirs for ![[name]] embeds not next to
                            -- the note (e.g. an Obsidian attachment folder)
+    css = {},              -- user stylesheets inlined after mdpv.css (paths
+                           -- may contain ~; they win the cascade)
     follow_buffer = false, -- preview follows the current buffer (BufEnter)
     scroll_sync = true,    -- see |mdpv-sync|; true | false | 'both'
   })
 <
 Calling setup() again applies validated changes to previews that are already
-open; pages reload when renderer, theme, or sync settings change. `host` and
+open; pages reload when renderer, theme, sync, or `css` settings change. `host` and
 `port` cannot change while a preview is open. Close the previews first to
 rebind the server without invalidating a live private URL.
 
@@ -193,6 +195,12 @@ and the same browser tab redirects to it instead of opening a second one.
 Non-markdown buffers leave the preview where it is. The first preview must be
 opened manually — `follow_buffer` redirects an existing preview, it does not
 auto-open one.
+
+CUSTOM CSS                                                    *mdpv-css*
+
+`css` lists stylesheet files inlined into the page after mdpv.css, so their
+rules win the cascade — theme the preview without touching the plugin. Paths
+may contain `~`; unreadable entries warn and are skipped.
 
 THE FLOATING MENU                                              *mdpv-menu*
 

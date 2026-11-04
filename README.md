@@ -136,6 +136,8 @@ require('mdpv').setup({
   attachment_dirs = {},    -- dirs searched by bare filename for ![[name]] embeds
                            -- that live elsewhere (e.g. an Obsidian attachment
                            -- folder)
+  css = {},                -- user stylesheets inlined into the page, loaded
+                           -- after mdpv.css so they can override it
   follow_buffer = false,   -- the preview follows the current buffer on BufEnter
   scroll_sync = true,      -- preview follows the cursor; both directions are
                            -- in-page toggles — 'both' just defaults the
@@ -144,7 +146,7 @@ require('mdpv').setup({
 ```
 
 Calling `setup()` again applies validated changes to previews that are already
-open; pages reload when renderer, theme, or sync settings change. `host` and
+open; pages reload when renderer, theme, sync, or `css` settings change. `host` and
 `port` cannot change while a preview is open, because existing private URLs
 would become invalid. Close the previews first to rebind the server.
 

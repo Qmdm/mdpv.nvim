@@ -52,6 +52,8 @@ local state = {
   template = nil, ---@type string? assets/index.html, read once per server run
   reload_images = true, -- watch served files and push `assets` events on change
   attachment_dirs = {}, ---@type string[] fallback dirs for bare-name embeds
+  css = {}, ---@type string[] user stylesheets inlined into the page
+  user_css_html = '', -- inlined <style> blocks, rebuilt on reconfigure
   prefs = {}, ---@type table<string, string> page preferences, mirrored to disk
   connections = {}, ---@type table<uv.uv_tcp_t, true>
   connection_count = 0,
@@ -83,6 +85,24 @@ local function css_links(theme)
   return table.concat(out, '\n')
 end
 
+-- User stylesheets are inlined (not linked) so no extra file routes are
+-- needed, and they land after mdpv.css so their rules win the cascade.
+-- Read on the main loop (from apply_runtime_config), not at page-build time:
+-- the build runs in a uv fast context where vim.fn is unavailable.
+local function read_user_css(paths)
+  local styles = {}
+  for _, path in ipairs(paths) do
+    local expanded = vim.fn.expand(path)
+    if vim.fn.filereadable(expanded) == 0 then
+      vim.notify('mdpv: css file not readable: ' .. path, vim.log.levels.WARN)
+    else
+      local lines = vim.fn.readfile(expanded)
+      styles[#styles + 1] = '<style>\n' .. table.concat(lines, '\n') .. '\n</style>'
+    end
+  end
+  return table.concat(styles, '\n')
+end
+
 local function features_for(config)
   return {
     math = config.math == false and false or (type(config.math) == 'table' and config.math or true),
@@ -98,10 +118,13 @@ local function apply_runtime_config(config)
   local changed = state.theme ~= config.theme
     or not vim.deep_equal(state.features, features)
     or old_reload ~= (config.reload_images ~= false)
+    or not vim.deep_equal(state.css, config.css or {})
   state.theme = config.theme
   state.features = features
   state.reload_images = config.reload_images ~= false
   state.attachment_dirs = config.attachment_dirs or {}
+  state.css = config.css or {}
+  state.user_css_html = read_user_css(state.css)
   if old_reload and not state.reload_images then
     for token in pairs(state.previews) do
       watch.drop(token)
@@ -215,6 +238,7 @@ local function page_shell(title, boot_json, cb)
       THEME = state.theme,
       COLOR_SCHEME = state.theme == 'auto' and 'light dark' or state.theme,
       CSS_LINKS = css_links(state.theme),
+      USER_CSS = state.user_css_html,
       V = state.buster,
       -- Boot data ships in a non-executable JSON data block (inline scripts
       -- would violate the page's own CSP). Escaping '<' as unicode prevents

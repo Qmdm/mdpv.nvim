@@ -19,6 +19,7 @@ local defaults = {
   wikilinks = true, -- [[page]] / [[page|alias]] / ![[img]] resolve like Obsidian
   reload_images = true, -- watch served files; changed images refresh in open previews
   attachment_dirs = {}, -- fallback dirs for bare-name embeds (![[name.png]])
+  css = {}, -- user stylesheets inlined into the page (absolute paths)
   follow_buffer = false, -- preview follows the current buffer on BufEnter
   -- false: off | true: browser follows the cursor line (toggleable in-page)
   -- | 'both': additionally, scrolling the page moves the cursor
@@ -81,6 +82,11 @@ function M.setup(opts)
   vim.validate('config.attachment_dirs', config.attachment_dirs, vim.islist, 'a list of directory strings')
   for i, dir in ipairs(config.attachment_dirs) do
     vim.validate(('config.attachment_dirs[%d]'):format(i), dir, 'string')
+  end
+  vim.validate('config.css', config.css, 'table')
+  vim.validate('config.css', config.css, vim.islist, 'a list of stylesheet paths')
+  for i, path in ipairs(config.css) do
+    vim.validate(('config.css[%d]'):format(i), path, 'string')
   end
   vim.validate('config.follow_buffer', config.follow_buffer, 'boolean')
   vim.validate('config.scroll_sync', config.scroll_sync, function(t)

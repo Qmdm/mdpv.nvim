@@ -591,6 +591,26 @@ body.mdpv-wide main {
   margin: 0;
 }
 
+/* Dark-mode backing for transparent SVG/PNG embeds (e.g. rendered LaTeX
+   snippets): black ink on a transparent canvas vanishes into a dark page.
+   Cover both ways the page can be dark: an explicit `dark` theme, and
+   `auto` under a dark system scheme. */
+[data-theme="dark"] .markdown-body img[src$=".svg"],
+[data-theme="dark"] .markdown-body img[src$=".png"] {
+  background-color: #ffffff;
+  border-radius: 4px;
+  padding: 4px;
+}
+
+@media (prefers-color-scheme: dark) {
+  [data-theme="auto"] .markdown-body img[src$=".svg"],
+  [data-theme="auto"] .markdown-body img[src$=".png"] {
+    background-color: #ffffff;
+    border-radius: 4px;
+    padding: 4px;
+  }
+}
+
 @media (max-width: 767px) {
   main {
     padding: 0 0 32px;
